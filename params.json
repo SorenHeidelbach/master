@@ -1,0 +1,48 @@
+{
+  "misc":
+  {
+    "seed":1,
+    "ND_profile_path":"/shared-nfs/SH/nanodisco/dataset/methylation_profile_MGM1_motif.RDS",
+    "output_folder":"/shared-nfs/SH/analysis_output/MGM1",
+    "selected_features":"/shared-nfs/SH/analysis_output/MGM1/features.csv",
+    "assembly_fasta":"/shared-nfs/SH/nanodisco/MGM1/reference/metagenome.fasta",
+    "run_checkm":"FALSE"
+  },
+  "autoencoder":
+  {
+    "activation_function":"relu",
+    "intermediate_nodes":1000,
+    "bottleneck_nodes":42,
+    "epochs":1000
+  },
+  "AAE":
+  {
+    "encoded_dim":5
+    
+  },
+  
+  "tsne":
+  {
+    "theta":0.5,
+    "perplexity":30,
+    "max_iter":1000
+  },
+  "hdbscan":
+  {
+    "minPts":15
+  },
+  "PCA":
+  {
+    "nPC":2
+  },
+  "feature":
+  {
+    "min_nb_occurrence":15,
+    "min_dist_score":0.5,
+    "filter_method":"max",
+    "missing_value":0,
+    "min_contig_size":10000
+  }
+}
+
+
