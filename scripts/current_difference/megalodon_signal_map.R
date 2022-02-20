@@ -119,10 +119,8 @@ load_mapping_hdf5 <- function(arg_mapping, reads_ids = NA){
     Ref_to_signal <- Ref_to_signal %>% 
       subset(read_id %in% reads_ids)
   }
-  tictoc::tic()
   dacs_test <- 
-    mcmapply(
-      mc.cores = 1,
+    mapply(
       function(len, end, id, ref, pos){
         list(
           dac <- dacs$dacs[(end-len+1):end],
