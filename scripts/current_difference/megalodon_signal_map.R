@@ -194,25 +194,47 @@ mapping_nat <- fread("/shared-nfs/SH/samples/zymo/megalodon/nat_test2/mappings_s
   select(V1, V3, V4) %>% 
   setnames(c("read_id", "contig", "start"))
 
-dacs_pcr <- load_mapping_hdf5(arg$signal_mapping_pcr, reads_ids = mapping_pcr %>% subset(contig == "bs_contig1") %>% pull(read_id) %>% unique())
+hdf5_pcr <- H5Fopen(arg$signal_mapping_pcr)
+test <- h5ls(hdf5_pcr) %>% filter(group == "/Batches") %>% pull(name) %>% 
+  lapply(
+    function(batch){
+      load_mapping_hdf5(
+        hdf5_pcr, 
+        batch = batch
+      )
+    }
+  )
+dacs_pcr <- load_mapping_hdf5(
+  arg$signal_mapping_pcr, 
+  batch = arg$batch,
+  reads_ids = mapping_pcr %>% subset(contig == "bs_contig1") %>% pull(read_id) %>% unique()
+  )
+
 dacs_nat <- load_mapping_hdf5(arg$signal_mapping_nat, reads_ids = mapping_nat %>% subset(contig == "bs_contig1") %>% pull(read_id) %>% unique())
 
+# Plot of normalised dacs of a read
+dacs_nat[read_id == unique(dacs_nat$read_id)[1],][
+    , dacs_norm := (V1 - mean(V1))/sd(V1), by = read_id
+  ] %>% 
+  ggplot(aes(x = pos, y = V1)) +
+  geom_line()
 
 # Load in reference mappings
-
 signal_mappings <- rbind(
   dacs_pcr %>% 
-    left_join(mapping, by = "read_id") %>% 
+    left_join(mapping_pcr, by = "read_id") %>% 
     mutate(
       pos = pos - 1,
-      contig_index = paste0(contig, "_", start + pos),
+      contig_index = start + pos,
+      contig_id = paste0(contig, "_", contig_index),
       type = "pcr"
     ),
   dacs_nat %>% 
-    left_join(mapping, by = "read_id") %>% 
+    left_join(mapping_nat, by = "read_id") %>% 
     mutate(
       pos = pos - 1,
-      contig_index = paste0(contig, "_", start + pos),
+      contig_index = start + pos,
+      contig_id = paste0(contig, "_", contig_index),
       type = "nat"
     )
 ) %>% group_nest_dt(contig_index)
