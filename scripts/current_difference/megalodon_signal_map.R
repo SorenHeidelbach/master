@@ -237,7 +237,10 @@ signal_mappings <- rbind(
       contig_id = paste0(contig, "_", contig_index),
       type = "nat"
     )
-) %>% group_nest_dt(contig_index)
+) 
+signal_mappings[
+  , dacs_norm := (V1 - mean(V1))/sd(V1), by = read_id
+]
 
 utest <- signal_mappings$data %>% 
   lapply(
