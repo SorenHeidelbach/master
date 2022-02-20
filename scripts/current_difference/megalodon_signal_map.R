@@ -114,7 +114,7 @@ load_mapping_hdf5 <- function(arg_mapping, reads_ids = NA){
     ]
   
   
-  print("asd3")
+  log_info("Adding reference mapping to dacs")
   if (!is.na(reads_ids)) {
     Ref_to_signal <- Ref_to_signal %>% 
       subset(read_id %in% reads_ids)
@@ -141,6 +141,7 @@ load_mapping_hdf5 <- function(arg_mapping, reads_ids = NA){
       SIMPLIFY = FALSE
     ) %>% 
     rbindlist()
+  log_success("Finished processing {batch}")
   return(dacs_test)
 }
 
