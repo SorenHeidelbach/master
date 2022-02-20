@@ -53,7 +53,7 @@ load_mapping_hdf5 <- function(arg_mapping, reads_ids = NA){
   # h5ls(hdf5_file)
   
   # Read dacs (current measurements)
-  dacs <- h5read(hdf5_file, name = paste0("/Batches/", arg$batch, "/Dacs")) %>% 
+  log_info("Loading data from {batch}")
     data.table() %>% 
     setnames("dacs")
   
@@ -83,7 +83,7 @@ load_mapping_hdf5 <- function(arg_mapping, reads_ids = NA){
     cbind("read_id" = h5read(hdf5_file, name = paste0("/Batches/", arg$batch, "/read_id")))
   H5Fclose(hdf5_file)
   
-  print("asd2")
+  log_info("Adding read information to reference mapping")
   # Add read id to ref to signal for later grouping
   Ref_to_signal <- mapply(
       function(len, start, id){
