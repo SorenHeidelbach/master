@@ -203,7 +203,8 @@ signal_mappings[
   , dacs_norm := (V1 - mean(V1))/sd(V1), by = read_id
 ]
 
-signal_mappings <- signal_mappings %>%  group_nest_dt(contig_id, contig_index, contig) 
+signal_mappings <- signal_mappings %>%  
+  group_nest_dt(contig_id, contig_index, contig) 
 
 # p_dac_norm <- signal_mappings[contig_id %in% paste0("bs_contig1_4990", 10:20), ] %>% 
 #   ggplot(aes(x = as.character(contig_index), y = dacs_norm, fill = type)) +
