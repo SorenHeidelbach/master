@@ -145,23 +145,33 @@ mapping_nat <- fread("/shared-nfs/SH/samples/zymo/megalodon/nat_test2/mappings_s
   select(V1, V3, V4) %>% 
   setnames(c("read_id", "contig", "start"))
 
+log_info("Processing PCR mappings")
 hdf5_pcr <- H5Fopen(arg$signal_mapping_pcr)
-test <- h5ls(hdf5_pcr) %>% filter(group == "/Batches") %>% pull(name) %>% 
-  lapply(
+dacs_pcr <- h5ls(hdf5_pcr) %>% filter(group == "/Batches") %>% pull(name) %>% 
+  mclapply(
+    mc.cores = 2,
     function(batch){
       load_mapping_hdf5(
         hdf5_pcr, 
         batch = batch
       )
     }
-  )
-dacs_pcr <- load_mapping_hdf5(
-  arg$signal_mapping_pcr, 
-  batch = arg$batch,
-  reads_ids = mapping_pcr %>% subset(contig == "bs_contig1") %>% pull(read_id) %>% unique()
-  )
+  ) %>% 
+  rbindlist()
 
-dacs_nat <- load_mapping_hdf5(arg$signal_mapping_nat, reads_ids = mapping_nat %>% subset(contig == "bs_contig1") %>% pull(read_id) %>% unique())
+log_info("Processing NAT mappings")
+hdf5_nat <- H5Fopen(arg$signal_mapping_nat)
+dacs_nat <- h5ls(hdf5_nat) %>% filter(group == "/Batches") %>% pull(name) %>% 
+  mclapply(
+    mc.cores = 2,
+    function(batch){
+      load_mapping_hdf5(
+        hdf5_nat, 
+        batch = batch
+  )
+    }
+  ) %>% 
+  rbindlist()
 
 # Plot of normalised dacs of a read
 dacs_nat[read_id == unique(dacs_nat$read_id)[1],][
