@@ -75,7 +75,7 @@ load_mapping_hdf5 <- function(hdf5_file, batch, reads_ids = NA){
     apply(MARGIN = 2, FUN = as.numeric) %>% 
     data.table(stringsAsFactors = FALSE) %>% 
     cbind("read_id" = h5read(hdf5_file, name = paste0("/Batches/", batch, "/read_id")))
-  H5Fclose(hdf5_file)
+  
   
   log_info("Adding read information to reference mapping")
   # Add read id to ref to signal for later grouping
@@ -106,13 +106,12 @@ load_mapping_hdf5 <- function(hdf5_file, batch, reads_ids = NA){
     ][
       , pos := 1:.N, by = read_id
     ]
-  
-  
   log_info("Adding reference mapping to dacs")
   if (!is.na(reads_ids)) {
     Ref_to_signal <- Ref_to_signal %>% 
       subset(read_id %in% reads_ids)
   }
+
   dacs_test <- 
     mapply(
       function(len, end, id, ref, pos){
@@ -181,30 +180,51 @@ dacs_nat[read_id == unique(dacs_nat$read_id)[1],][
   geom_line()
 
 # Load in reference mappings
-signal_mappings <- rbind(
-  dacs_pcr %>% 
-    left_join(mapping_pcr, by = "read_id") %>% 
-    mutate(
-      pos = pos - 1,
-      contig_index = start + pos,
-      contig_id = paste0(contig, "_", contig_index),
-      type = "pcr"
-    ),
-  dacs_nat %>% 
-    left_join(mapping_nat, by = "read_id") %>% 
-    mutate(
-      pos = pos - 1,
-      contig_index = start + pos,
-      contig_id = paste0(contig, "_", contig_index),
-      type = "nat"
-    )
-) 
-signal_mappings[
+add_mapping_to_dacs <- function(dacs, mappings, type){
+  dacs[
+      mappings, on = "read_id", `:=`(contig = i.contig, start = i.start)
+    ][
+      , type := type
+    ][
+      , pos := pos - 1
+    ][
+      , contig_index := start + pos
+    ][
+      , contig_id := paste0(contig, "_", contig_index)
+    ][
   , dacs_norm := (V1 - mean(V1))/sd(V1), by = read_id
 ]
+}
+signal_mappings <- add_mapping_to_dacs(dacs_pcr, mapping_pcr, "pcr") %>% 
+  group_nest_dt(contig_id, contig_index, contig, .key = "pcr")
 
-signal_mappings <- signal_mappings %>%  
-  group_nest_dt(contig_id, contig_index, contig) 
+signal_mappings2 <- add_mapping_to_dacs(dacs_nat, mapping_nat, "nat") %>% 
+  group_nest_dt(contig_id, contig_index, contig, .key = "nat")
+
+arg$min_u_val <- 1e-8
+signal_mappings[
+    signal_mappings2, on = "contig_id", nat := i.nat
+  ][
+    , mean_nat := lapply(nat, function(x){mean(x$dacs_norm, na_rm = TRUE)}) %>% unlist()
+  ][
+    , mean_pcr := lapply(pcr, function(x){mean(x$dacs_norm, na_rm = TRUE)}) %>% unlist()
+  ][
+    , mean_dif := mean_nat - mean_pcr
+  ][
+    , n_nat := lapply(nat, nrow) %>% unlist()
+  ][
+    , n_pcr := lapply(pcr, nrow) %>% unlist()
+  ][
+    , u_val := mapply(FUN = function(nat, pcr){
+      if(length(nat$dacs_norm) > 0 & length(pcr$dacs_norm) > 0) {
+        wilcox.test(nat$dacs_norm, pcr$dacs_norm)$p.value
+      } else {
+        NA
+      }},
+      nat,
+      pcr
+    )
+  ]
 
 # p_dac_norm <- signal_mappings[contig_id %in% paste0("bs_contig1_4990", 10:20), ] %>% 
 #   ggplot(aes(x = as.character(contig_index), y = dacs_norm, fill = type)) +
@@ -221,47 +241,33 @@ signal_mappings <- signal_mappings %>%
 #   theme(axis.text.x.bottom = element_text(angle = 90))
 # 
 # p_dac_norm / p_dac
-library(doParallel)  # will load parallel, foreach, and iterators
-cl <- makeCluster(30)
-registerDoParallel(cl)
-signal_mappings2 <- signal_mappings %>% 
-  left_join(signal_mappings %>%
-    mutate(
-      chunk = floor(contig_index/1000)
-    ) %>% 
-    split(f = .$chunk) %>% 
-    mclapply( 
-      mc.cores = 30,
-      function(x){
-        apply(
-          x,
-          MARGIN = 1,
-          function(dt){
-            pcr = dt$data[type == "pcr",]
-            nat = dt$data[type == "nat",]
-            if ((nrow(pcr) != 0) & (nrow(nat) != 0)){
-              p <- wilcox.test(pcr$dacs_norm, nat$dacs_norm)$p.value
-              list(
-                contig_id = dt$contig_id,
-                p_val = p,
-                dacs_nat_minus_pcr = mean(nat$dacs_norm) - mean(pcr$dacs_norm)
-              )
-            }else {
-              list(
-                contig_id = dt$contig_id,
-                p_val = NA,
-                dacs_nat_minus_pcr = mean(nat$dacs_norm) - mean(pcr$dacs_norm)
-              )
-            }
-          }
-        ) %>% 
-          rbindlist()
-      }
-    ) %>% 
-      rbindlist()
-)
-
-arg$min_u_val <- 1e-8
+# library(doParallel)  # will load parallel, foreach, and iterators
+# cl <- makeCluster(30)
+# registerDoParallel(cl)
+# signal_mappings2 <- signal_mappings %>%
+#         apply(
+#           MARGIN = 1,
+#           function(dt){
+#             pcr = dt$data[type == "pcr",]
+#             nat = dt$data[type == "nat",]
+#             if ((nrow(pcr) != 0) & (nrow(nat) != 0)){
+#               p <- wilcox.test(pcr$dacs_norm, nat$dacs_norm)$p.value
+#               list(
+#                 contig_index = dt$contig_index,
+#                 p_val = p,
+#                 dacs_nat_minus_pcr = mean(nat$dacs_norm) - mean(pcr$dacs_norm)
+#               )
+#             } else {
+#               list(
+#                 contig_index = dt$contig_index,
+#                 p_val = NA,
+#                 dacs_nat_minus_pcr = mean(nat$dacs_norm) - mean(pcr$dacs_norm)
+#               )
+#             }
+#           }
+#         ) %>% 
+#           rbindlist()
+# 
 
 p_mean_dif_event <- signal_mappings2 %>% 
   filter(!is.na(p_val)) %>% 
