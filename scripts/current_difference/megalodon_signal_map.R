@@ -152,7 +152,8 @@ dacs_pcr <- h5ls(hdf5_pcr) %>% filter(group == "/Batches") %>% pull(name) %>%
     function(batch){
       load_mapping_hdf5(
         hdf5_pcr, 
-        batch = batch
+        batch = batch,
+        reads_ids = mapping_pcr[contig %in% "lf_contig3",][, read_id]
       )
     }
   ) %>% 
@@ -166,7 +167,8 @@ dacs_nat <- h5ls(hdf5_nat) %>% filter(group == "/Batches") %>% pull(name) %>%
     function(batch){
       load_mapping_hdf5(
         hdf5_nat, 
-        batch = batch
+        batch = batch,
+        reads_ids = mapping_nat[contig %in% "lf_contig3",][, read_id]
   )
     }
   ) %>% 
@@ -176,8 +178,9 @@ dacs_nat <- h5ls(hdf5_nat) %>% filter(group == "/Batches") %>% pull(name) %>%
 dacs_nat[read_id == unique(dacs_nat$read_id)[1],][
     , dacs_norm := (V1 - mean(V1))/sd(V1), by = read_id
   ] %>% 
-  ggplot(aes(x = pos, y = V1)) +
-  geom_line()
+  ggplot(aes(x = pos, y = dacs_norm)) +
+  geom_line() +
+  theme_minimal()
 
 # Load in reference mappings
 add_mapping_to_dacs <- function(dacs, mappings, type){
@@ -269,15 +272,15 @@ signal_mappings[
 #           rbindlist()
 # 
 
-p_mean_dif_event <- signal_mappings2 %>% 
-  filter(!is.na(p_val)) %>% 
+p_mean_dif_event <- signal_mappings  %>% 
   mutate(
-    event = ifelse(p_val < arg$min_u_val, TRUE, FALSE)
+    event = ifelse(u_val < arg$min_u_val, TRUE, FALSE)
   ) %>% 
-  ggplot(aes(x = contig_index, y = dacs_nat_minus_pcr)) +
+  filter(!is.na(event)) %>% 
+  ggplot(aes(x = contig_index, y = mean_dif)) +
   geom_hline(yintercept = 0) +
-  geom_segment(aes(x = contig_index, xend = contig_index, yend = dacs_nat_minus_pcr), y = 0, size = 0.2) +
-  geom_point(aes(fill = event, size = event), shape = 21) +
+  geom_segment(aes(x = contig_index, xend = contig_index, yend = mean_dif), y = 0, size = 0.2) +
+  geom_point(aes(fill = event,  size = event), shape = 21) +
   scale_size_manual(values = c(0.9, 3)) +
   guides(
     fill = guide_legend(title = "Event"),
@@ -288,14 +291,14 @@ p_mean_dif_event <- signal_mappings2 %>%
     y = "NAT vs. PCR (Mean difference)"
   ) #+ ggforce::facet_zoom(xlim = c(218500, 219500))
 
-p_pval_event <- signal_mappings2 %>% 
-  filter(!is.na(p_val)) %>% 
+p_uval_event <- signal_mappings %>% 
+  filter(!is.na(u_val)) %>% 
   mutate(
-    event = ifelse(p_val < arg$min_u_val, TRUE, FALSE)
+    event = ifelse(u_val < arg$min_u_val, TRUE, FALSE)
   ) %>% 
-  ggplot(aes(x = contig_index, y = p_val)) +
+  ggplot(aes(x = contig_index, y = u_val)) +
   geom_hline(yintercept = 1) +
-  geom_segment(aes(x = contig_index, xend = contig_index, yend = p_val), y = 0, size = 0.2) +
+  geom_segment(aes(x = contig_index, xend = contig_index, yend = u_val), y = 0, size = 0.2) +
   geom_point(aes(fill = event, size = event), shape = 21) +
   scale_size_manual(values = c(0.9, 3)) +
   scale_y_log10() +
@@ -307,7 +310,9 @@ p_pval_event <- signal_mappings2 %>%
     x = "Contig Position",
     y = "NAT vs. PCR (U-value)"
   ) #+ggforce::facet_zoom(xlim = c(218500, 219500))
-p_work <- (p_pval_event | p_mean_dif_event) +
+
+
+p_work <- (p_uval_event | p_mean_dif_event) +
   plot_layout(guides = "collect") +
   plot_annotation(
     title = paste0("Significant events in ", contig_select, " (U-value threshold: ", arg$min_u_val, ")")
