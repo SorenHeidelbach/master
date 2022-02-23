@@ -276,96 +276,195 @@ signal_mappings[
   ]
 }
 
-# p_dac_norm <- signal_mappings[contig_id %in% paste0("bs_contig1_4990", 10:20), ] %>% 
-#   ggplot(aes(x = as.character(contig_index), y = dacs_norm, fill = type)) +
-#   geom_boxplot(outlier.alpha = 0) +
-#   geom_jitter(shape = 21, size = 0.5, position = position_jitterdodge(seed = 2)) +
-#   theme_bw() +
-#   theme(axis.text.x.bottom = element_text(angle = 90))
-# 
-# p_dac <- signal_mappings[contig_id %in% paste0("bs_contig1_4990", 10:20), ] %>% 
-#   ggplot(aes(x = as.character(contig_index), y = V1, fill = type)) +
-#   geom_boxplot(outlier.alpha = 0) +
-#   geom_jitter(shape = 21, size = 0.5, position = position_jitterdodge(seed = 2), ) +
-#   theme_bw() +
-#   theme(axis.text.x.bottom = element_text(angle = 90))
-# 
-# p_dac_norm / p_dac
-# library(doParallel)  # will load parallel, foreach, and iterators
-# cl <- makeCluster(30)
-# registerDoParallel(cl)
-# signal_mappings2 <- signal_mappings %>%
-#         apply(
-#           MARGIN = 1,
-#           function(dt){
-#             pcr = dt$data[type == "pcr",]
-#             nat = dt$data[type == "nat",]
-#             if ((nrow(pcr) != 0) & (nrow(nat) != 0)){
-#               p <- wilcox.test(pcr$dacs_norm, nat$dacs_norm)$p.value
-#               list(
-#                 contig_index = dt$contig_index,
-#                 p_val = p,
-#                 dacs_nat_minus_pcr = mean(nat$dacs_norm) - mean(pcr$dacs_norm)
-#               )
-#             } else {
-#               list(
-#                 contig_index = dt$contig_index,
-#                 p_val = NA,
-#                 dacs_nat_minus_pcr = mean(nat$dacs_norm) - mean(pcr$dacs_norm)
-#               )
-#             }
-#           }
-#         ) %>% 
-#           rbindlist()
-# 
+###############################################################################
+# Visualisation of events in one contig
+###############################################################################
+# Plots 
 
-p_mean_dif_event <- signal_mappings  %>% 
-  mutate(
-    event = ifelse(u_val < arg$min_u_val, TRUE, FALSE)
-  ) %>% 
-  filter(!is.na(event)) %>% 
+plot_events <- function(dt){
+  guides_format <- guides(
+      fill = guide_legend(title = "Event"),
+      size = guide_legend(title = "Event"),
+      col = guide_legend(title = "Event"),
+      alpha = "none"
+    )
+  plot_col <- c("#99712d", "#2d5599")
+  geom_point_default <- geom_jitter(alpha = 0.1, size = 0.1)
+  
+  
+  p_1 <- dt %>% 
+    filter(!is.na(event_weighted)) %>% 
   ggplot(aes(x = contig_index, y = mean_dif)) +
   geom_hline(yintercept = 0) +
   geom_segment(aes(x = contig_index, xend = contig_index, yend = mean_dif), y = 0, size = 0.2) +
-  geom_point(aes(fill = event,  size = event), shape = 21) +
-  scale_size_manual(values = c(0.9, 3)) +
-  guides(
-    fill = guide_legend(title = "Event"),
-    size = guide_legend(title = "Event")
-  ) +
+    geom_point(aes(fill = event_weighted,  size = event_weighted), shape = 21) +
   labs(
     x = "Contig Position",
     y = "NAT vs. PCR (Mean difference)"
-  ) #+ ggforce::facet_zoom(xlim = c(218500, 219500))
+    )  + 
+    scale_size_manual(values = c(0.9, 3)) +
+    scale_fill_manual(values = plot_col) +
+    guides_format
 
-p_uval_event <- signal_mappings %>% 
-  filter(!is.na(u_val)) %>% 
-  mutate(
-    event = ifelse(u_val < arg$min_u_val, TRUE, FALSE)
-  ) %>% 
-  ggplot(aes(x = contig_index, y = u_val)) +
+  p_2 <- dt %>% 
+    filter(!is.na(event_weighted)) %>% 
+    ggplot(aes(x = contig_index, y = u_val_weighted_log)) +
   geom_hline(yintercept = 1) +
-  geom_segment(aes(x = contig_index, xend = contig_index, yend = u_val), y = 0, size = 0.2) +
-  geom_point(aes(fill = event, size = event), shape = 21) +
-  scale_size_manual(values = c(0.9, 3)) +
+    geom_segment(aes(x = contig_index, xend = contig_index, yend = u_val_weighted_log), y = 0, size = 0.2) +
+    geom_point(aes(fill = event_weighted, size = event_weighted), shape = 21) +
+    labs(
+      x = "Contig Position",
+      y = "NAT vs. PCR (U-value)"
+    ) +
+    scale_size_manual(values = c(0.4, 2)) +
+    scale_y_log10() +
+    scale_fill_manual(values = plot_col) +
+    guides_format 
+    
+  
+  p_3 <- dt %>% 
+    filter(!is.na(event_weighted)) %>% 
+    ggplot(aes(x = n_pcr, y = n_nat, col = event_weighted, fill = event_weighted)) +
+    #geom_point_default +
+    labs(
+      x = "PCR current values at contig position",
+      y = "NAT current values at contig position"
+    ) + 
+    geom_point_default +
+    stat_density_2d_filled(
+      contour = TRUE,
+      aes(alpha = after_stat(level)),
+      bins = 10, col = "gray10", size = 0.1
+    ) +
+    scale_x_log10() +
   scale_y_log10() +
-  guides(
-    fill = guide_legend(title = "Event"),
-    size = guide_legend(title = "Event")
+    scale_alpha_discrete(range = c(0,1)) +
+    scale_fill_manual(values = plot_col) +
+    scale_color_manual(values = plot_col) +
+    guides_format
+  
+  p_4 <- dt %>% 
+    filter(!is.na(event_weighted)) %>% 
+    ggplot(aes(x = n_pcr_map, y = n_nat_map, col = event, fill = event_weighted)) +
+    labs(
+      x = "Number of PCR reads mapped to contig position",
+      y = "Number of NAT reads mapped to contig position"
   ) +
+    geom_point_default +
+    # stat_density_2d_filled(
+    #   contour = TRUE,
+    #   aes(alpha = after_stat(level)),
+    #   bins = 2, col = "gray10", size = 0.1
+    # ) +
+    scale_alpha_discrete(range = c(0,1)) +
+    scale_color_manual(values = plot_col) +
+    scale_fill_manual(values = plot_col) +
+    guides_format
+  
+  p_5 <- dt %>% 
+    filter(!is.na(event_weighted)) %>% 
+    mutate(
+      mappings = n_pcr_map / n_nat_map
+    ) %>% 
+    ggplot(aes(y = mappings, x = u_val_weighted_log, col = event_weighted)) +
   labs(
-    x = "Contig Position",
-    y = "NAT vs. PCR (U-value)"
-  ) #+ggforce::facet_zoom(xlim = c(218500, 219500))
+      x = "U-value",
+      y = "Proportion of PCR to NAT reads mapped"
+    ) + 
+    geom_point_default +
+    scale_x_log10() +
+    scale_y_log10() +
+    scale_color_manual(values = plot_col) +
+    guides_format
 
+  p_6 <- dt %>% 
+    filter(!is.na(event_weighted)) %>% 
+    ggplot(aes(x = mean_dif, y = u_val_weighted_log, col = event_weighted)) +
+    labs(
+      x = "Mean difference",
+      y = "U-value"
+    ) + 
+    geom_point_default +
+    scale_y_log10() +
+    scale_color_manual(values = plot_col) +
+    guides_format
 
-p_work <- (p_uval_event | p_mean_dif_event) +
+  p_all <- (p_1 | p_2) / (p_3 | p_4) / (p_5 | p_6) +
   plot_layout(guides = "collect") +
   plot_annotation(
-    title = paste0("Significant events in ", contig_select, " (U-value threshold: ", arg$min_u_val, ")")
+      title = paste0("Significant events in ", signal_mappings$contig %>% unique() %>% `[`(1)," (U-value threshold: ", arg$min_u_val, ")")
   )  &
   theme_bw()
-p_work
+  return(p_all)
+}
+
+
+# Importing reads to reference mappings
+mapping_pcr <- fread("/shared-nfs/SH/samples/zymo/megalodon/pcr_test/mappings_sorted_view.txt") %>% 
+  select(V1, V3, V4) %>% 
+  setnames(c("read_id", "contig", "start"))
+
+mapping_nat <- fread("/shared-nfs/SH/samples/zymo/megalodon/nat_test2/mappings_sorted_view.txt") %>% 
+  select(V1, V3, V4) %>% 
+  setnames(c("read_id", "contig", "start"))
+
+# Loading signal mappings
+log_info("Processing PCR mappings")
+hdf5_pcr <- H5Fopen(arg$signal_mapping_pcr)
+dacs_pcr <- h5ls(hdf5_pcr) %>% filter(group == "/Batches") %>% pull(name) %>% 
+  lapply(
+    function(batch){
+      load_mapping_hdf5(
+        hdf5_pcr, 
+        batch = batch,
+        reads_ids = mapping_pcr[contig %in% "lf_contig3",][, read_id]
+      )
+    }
+  ) %>% 
+  rbindlist()
+
+log_info("Processing NAT mappings")
+hdf5_nat <- H5Fopen(arg$signal_mapping_nat)
+dacs_nat <- h5ls(hdf5_nat) %>% filter(group == "/Batches") %>% pull(name) %>% 
+  lapply(
+    function(batch){
+      load_mapping_hdf5(
+        hdf5_nat, 
+        batch = batch,
+        reads_ids = mapping_nat[contig %in% "lf_contig3",][, read_id]
+      )
+    }
+  ) %>% 
+  rbindlist()
+
+
+signal_mappings <- add_mapping_to_dacs(dacs_pcr, mapping_pcr, "pcr") %>% 
+  group_nest_dt(contig_id, contig_index, contig, .key = "pcr")
+
+signal_mappings2 <- add_mapping_to_dacs(dacs_nat, mapping_nat, "nat") %>% 
+  group_nest_dt(contig_id, contig_index, contig, .key = "nat")
+
+calculate_current_diff(signal_mappings, signal_mappings2, arg$min_u_val)
+
+# Save processed signal mappings
+fwrite(
+  signal_mappings[
+    , unlist(nat, recursive = FALSE), 
+    by = eval(names(signal_mappings)[!(names(signal_mappings) %in% c("pcr", "nat"))])],
+  glue("{arg$out}/current_difference.tsv")
+)
+
+p_all <- plot_events(signal_mappings)
+
+ggsave(
+  width = unit(8, "cm"),
+  height = unit(10, "cm"),
+  p_all, 
+  filename = glue("{arg$out}/current_difference_{arg$contig_plot}.png"), 
+  device = "png"
+)
+
+
 
 
 
