@@ -7,8 +7,6 @@ pacman::p_load(
   "ggplot2", 
   "rhdf5",
   "seqinr",
-  "microbenchmark",
-  "foreach",
   "Rsamtools",
   "stringr",
   "patchwork",
@@ -432,6 +430,26 @@ ggsave(
 
 
 
+###############################################################################
+# Evaluation of PCR batch 1 vs batch 0
+###############################################################################
+
+signal_mappings_pcr_0 <- add_mapping_to_dacs(dacs_pcr[batch == "Batch_0", ], mapping_pcr, "pcr") %>% 
+  group_nest_dt(contig_id, contig_index, contig, .key = "pcr")
+
+signal_mappings_pcr_1 <- add_mapping_to_dacs(dacs_pcr[batch == "Batch_1", ], mapping_pcr, "nat") %>% 
+  group_nest_dt(contig_id, contig_index, contig, .key = "nat")
+
+calculate_current_diff(signal_mappings_pcr_0, signal_mappings_pcr_1, arg$min_u_val)
 
 
+p_pcr_vs_pcr <- plot_events(signal_mappings_pcr_0)
+
+ggsave(
+  width = unit(8, "cm"),
+  height = unit(10, "cm"),
+  p_pcr_vs_pcr, 
+  filename = glue("{arg$out}/current_difference_pcr_vs_pcr_{arg$contig_plot}.png"), 
+  device = "png"
+)
 
