@@ -31,6 +31,40 @@ unnest_dt <- function(dt, col, id){
   dt[, eval(col), by = eval(by)]
 }
 
+# Calculate rolling mean with distance weigth decay
+rolling_mean <- function(x, n = 2, weigth_dropoff = 0.75){
+  max_i <- length(x)
+  weigths <- lapply(1:n, function(x) weigth_dropoff^x) %>% unlist()
+  weigths <- c(weigths[length(weigths):1], 1, weigths)
+  out <- c()
+    for (i in seq_along(x)) {
+      values <- x[max(1,i-n):min(max_i, i+n)]
+      weigths_indexed <- weigths[max(1, n - i + 2):min(n*2 + 1, n + 1 + max_i - i)]
+      weigths_indexed <- weigths_indexed/sum(weigths_indexed)
+      out <- c(out, sum(values * weigths_indexed))
+    }
+  return(out)  
+}
+
+# Calculate rolling mean in log space with distance weigth decay
+rolling_mean_log <- function(x, n = 2, weigth_dropoff = 0.75, base = 10){
+  max_i <- length(x)
+  weigths <- lapply(1:n, function(x) weigth_dropoff^x) %>% unlist()
+  weigths <- c(weigths[length(weigths):1], 1, weigths)
+  out <- c()
+  for (i in seq_along(x)) {
+    values <- log(x[max(1,i-n):min(max_i, i+n)], base = base)
+    weigths_indexed <- weigths[max(1, n - i + 2):min(n*2 + 1, n + 1 + max_i - i)]
+    weigths_indexed <- weigths_indexed/sum(weigths_indexed)
+    out <- c(out, sum(values * weigths_indexed))
+  }
+  out <-base ^ out
+  return(out)  
+}
+
+###############################################################################
+# Input arguments
+###############################################################################
 
 arg <- list()
 arg$reference <- "/shared-nfs/SH/samples/zymo/Zymo-Isolates-SPAdes-Illumina.fasta"
@@ -227,7 +261,20 @@ signal_mappings[
       nat,
       pcr
     )
+    ][
+      , u_val_weighted := rolling_mean(u_val, n = arg$u_val_weight_window, weigth_dropoff = arg$u_val_weight_dropoff)
+    ][
+      , u_val_weighted_log := rolling_mean_log(u_val, n = arg$u_val_weight_window, weigth_dropoff = arg$u_val_weight_dropoff)
+    ][
+      , event := u_val < min_u_val
+    ][
+      , event_weighted := u_val_weighted_log < min_u_val*1e3
+    ][
+      , n_nat_map := lapply(nat, function(x) x$read_id %>% unique %>% length) %>% unlist()
+    ][
+      , n_pcr_map := lapply(pcr, function(x) x$read_id %>% unique %>% length) %>% unlist()
   ]
+}
 
 # p_dac_norm <- signal_mappings[contig_id %in% paste0("bs_contig1_4990", 10:20), ] %>% 
 #   ggplot(aes(x = as.character(contig_index), y = dacs_norm, fill = type)) +
