@@ -117,7 +117,7 @@ load_mapping_hdf5 <- function(hdf5_file, batch, reads_ids = NA){
     apply(MARGIN = 2, FUN = as.numeric) %>% 
     data.table(stringsAsFactors = FALSE) %>% 
     cbind("read_id" = h5read(hdf5_file, name = paste0("/Batches/", batch, "/read_id")))
-  
+
   
   log_info("Adding read information to reference mapping")
   # Add read id to ref to signal for later grouping
@@ -197,34 +197,34 @@ add_mapping_to_dacs <- function(dacs, mappings, type){
     ][
       , contig_id := paste0(contig, "_", contig_index)
     ][
-  , dacs_norm := (V1 - mean(V1))/sd(V1), by = read_id
-]
+      , dacs_norm := (V1 - mean(V1))/sd(V1), by = read_id
+    ]
 }
 
 # Calculate mean difference and u-test value
 calculate_current_diff <- function(dt1, dt2, min_u_val){
   dt1[
       dt2, on = "contig_id", nat := i.nat
-  ][
-    , mean_nat := lapply(nat, function(x){mean(x$dacs_norm, na_rm = TRUE)}) %>% unlist()
-  ][
-    , mean_pcr := lapply(pcr, function(x){mean(x$dacs_norm, na_rm = TRUE)}) %>% unlist()
-  ][
-    , mean_dif := mean_nat - mean_pcr
-  ][
+    ][
+      , mean_nat := lapply(nat, function(x){mean(x$dacs_norm, na_rm = TRUE)}) %>% unlist()
+    ][
+      , mean_pcr := lapply(pcr, function(x){mean(x$dacs_norm, na_rm = TRUE)}) %>% unlist()
+    ][
+      , mean_dif := mean_nat - mean_pcr
+    ][
       , n_nat := lapply(nat, nrow) %>% lapply(function(x) ifelse(is.null(x), NA, x)) %>% unlist()
-  ][
+    ][
       , n_pcr := lapply(pcr, nrow) %>% lapply(function(x) ifelse(is.null(x), NA, x)) %>% unlist()
-  ][
-    , u_val := mapply(FUN = function(nat, pcr){
-      if(length(nat$dacs_norm) > 0 & length(pcr$dacs_norm) > 0) {
-        wilcox.test(nat$dacs_norm, pcr$dacs_norm)$p.value
-      } else {
-        NA
-      }},
-      nat,
-      pcr
-    )
+    ][
+      , u_val := mapply(FUN = function(nat, pcr){
+        if(length(nat$dacs_norm) > 0 & length(pcr$dacs_norm) > 0) {
+          wilcox.test(nat$dacs_norm, pcr$dacs_norm)$p.value
+        } else {
+          NA
+        }},
+        nat,
+        pcr
+      )
     ][
       , u_val_weighted := rolling_mean(u_val, n = arg$u_val_weight_window, weigth_dropoff = arg$u_val_weight_dropoff)
     ][
@@ -237,7 +237,7 @@ calculate_current_diff <- function(dt1, dt2, min_u_val){
       , n_nat_map := lapply(nat, function(x) x$read_id %>% unique %>% length) %>% unlist()
     ][
       , n_pcr_map := lapply(pcr, function(x) x$read_id %>% unique %>% length) %>% unlist()
-  ]
+    ]
 }
 
 ###############################################################################
@@ -258,22 +258,22 @@ plot_events <- function(dt){
   
   p_1 <- dt %>% 
     filter(!is.na(event_weighted)) %>% 
-  ggplot(aes(x = contig_index, y = mean_dif)) +
-  geom_hline(yintercept = 0) +
-  geom_segment(aes(x = contig_index, xend = contig_index, yend = mean_dif), y = 0, size = 0.2) +
+    ggplot(aes(x = contig_index, y = mean_dif)) +
+    geom_hline(yintercept = 0) +
+    geom_segment(aes(x = contig_index, xend = contig_index, yend = mean_dif), y = 0, size = 0.2) +
     geom_point(aes(fill = event_weighted,  size = event_weighted), shape = 21) +
-  labs(
-    x = "Contig Position",
-    y = "NAT vs. PCR (Mean difference)"
+    labs(
+      x = "Contig Position",
+      y = "NAT vs. PCR (Mean difference)"
     )  + 
     scale_size_manual(values = c(0.9, 3)) +
     scale_fill_manual(values = plot_col) +
     guides_format
-
+  
   p_2 <- dt %>% 
     filter(!is.na(event_weighted)) %>% 
     ggplot(aes(x = contig_index, y = u_val_weighted_log)) +
-  geom_hline(yintercept = 1) +
+    geom_hline(yintercept = 1) +
     geom_segment(aes(x = contig_index, xend = contig_index, yend = u_val_weighted_log), y = 0, size = 0.2) +
     geom_point(aes(fill = event_weighted, size = event_weighted), shape = 21) +
     labs(
@@ -301,7 +301,7 @@ plot_events <- function(dt){
       bins = 10, col = "gray10", size = 0.1
     ) +
     scale_x_log10() +
-  scale_y_log10() +
+    scale_y_log10() +
     scale_alpha_discrete(range = c(0,1)) +
     scale_fill_manual(values = plot_col) +
     scale_color_manual(values = plot_col) +
@@ -313,7 +313,7 @@ plot_events <- function(dt){
     labs(
       x = "Number of PCR reads mapped to contig position",
       y = "Number of NAT reads mapped to contig position"
-  ) +
+    ) + 
     geom_point_default +
     # stat_density_2d_filled(
     #   contour = TRUE,
@@ -331,7 +331,7 @@ plot_events <- function(dt){
       mappings = n_pcr_map / n_nat_map
     ) %>% 
     ggplot(aes(y = mappings, x = u_val_weighted_log, col = event_weighted)) +
-  labs(
+    labs(
       x = "U-value",
       y = "Proportion of PCR to NAT reads mapped"
     ) + 
@@ -340,7 +340,7 @@ plot_events <- function(dt){
     scale_y_log10() +
     scale_color_manual(values = plot_col) +
     guides_format
-
+  
   p_6 <- dt %>% 
     filter(!is.na(event_weighted)) %>% 
     ggplot(aes(x = mean_dif, y = u_val_weighted_log, col = event_weighted)) +
@@ -352,13 +352,13 @@ plot_events <- function(dt){
     scale_y_log10() +
     scale_color_manual(values = plot_col) +
     guides_format
-
+  
   p_all <- (p_1 | p_2) / (p_3 | p_4) / (p_5 | p_6) +
-  plot_layout(guides = "collect") +
-  plot_annotation(
+    plot_layout(guides = "collect") +
+    plot_annotation(
       title = paste0("Significant events in ", signal_mappings$contig %>% unique() %>% `[`(1)," (U-value threshold: ", arg$min_u_val, ")")
-  )  &
-  theme_bw()
+    )  &
+    theme_bw() 
   return(p_all)
 }
 
