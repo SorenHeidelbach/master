@@ -12,11 +12,14 @@ pacman::p_load(
   "Rsamtools",
   "stringr",
   "patchwork",
-  "logger"
+  "logger",
+  "glue"
 )
 
-
-
+###############################################################################
+# Utility functions
+###############################################################################
+# goup_nest version for data.table
 group_nest_dt <- function(dt, ..., .key = "data"){
   stopifnot(is.data.table(dt))
   by <- substitute(list(...))
@@ -24,6 +27,7 @@ group_nest_dt <- function(dt, ..., .key = "data"){
   setnames(dt, old = "V1", new = .key)
   dt
 }
+# unnest version for data.table
 unnest_dt <- function(dt, col, id){
   stopifnot(is.data.table(dt))
   by <- substitute(id)
@@ -70,9 +74,15 @@ arg <- list()
 arg$reference <- "/shared-nfs/SH/samples/zymo/Zymo-Isolates-SPAdes-Illumina.fasta"
 arg$signal_mapping_pcr <- "/shared-nfs/SH/samples/zymo/megalodon/pcr_test/signal_mappings.hdf5"
 arg$signal_mapping_nat <- "/shared-nfs/SH/samples/zymo/megalodon/nat_test2/signal_mappings.hdf5"
+arg$out <- "/shared-nfs/SH/samples/zymo/current_difference"
+arg$contig_plot <- "lf_contig3"
+arg$min_u_val <- 1e-11
+arg$u_val_weight_window <- 3 # val*2 + 1
+arg$u_val_weight_dropoff <- 0.75 
+
 
 ###############################################################################
-# Importing signal_mapping.HDF5 
+# Import signal mappings
 ###############################################################################
 
 # Load in reference
@@ -154,7 +164,8 @@ load_mapping_hdf5 <- function(hdf5_file, batch, reads_ids = NA){
           dac_pos = (end-len+1):(end),
           read_id = rep(id, len),
           ref = rep(ref, len),
-          pos = rep(pos, len)
+          pos = rep(pos, len),
+          batch = rep(batch, len)
         )
       },
       Ref_to_signal$n_dac,
@@ -170,53 +181,12 @@ load_mapping_hdf5 <- function(hdf5_file, batch, reads_ids = NA){
   return(dacs_test)
 }
 
-mapping_pcr <- fread("/shared-nfs/SH/samples/zymo/megalodon/pcr_test/mappings_sorted_view.txt") %>% 
-  select(V1, V3, V4) %>% 
-  setnames(c("read_id", "contig", "start"))
 
-mapping_nat <- fread("/shared-nfs/SH/samples/zymo/megalodon/nat_test2/mappings_sorted_view.txt") %>% 
-  select(V1, V3, V4) %>% 
-  setnames(c("read_id", "contig", "start"))
+###############################################################################
+# Process signal mappings
+###############################################################################
 
-log_info("Processing PCR mappings")
-hdf5_pcr <- H5Fopen(arg$signal_mapping_pcr)
-dacs_pcr <- h5ls(hdf5_pcr) %>% filter(group == "/Batches") %>% pull(name) %>% 
-  mclapply(
-    mc.cores = 2,
-    function(batch){
-      load_mapping_hdf5(
-        hdf5_pcr, 
-        batch = batch,
-        reads_ids = mapping_pcr[contig %in% "lf_contig3",][, read_id]
-      )
-    }
-  ) %>% 
-  rbindlist()
-
-log_info("Processing NAT mappings")
-hdf5_nat <- H5Fopen(arg$signal_mapping_nat)
-dacs_nat <- h5ls(hdf5_nat) %>% filter(group == "/Batches") %>% pull(name) %>% 
-  mclapply(
-    mc.cores = 2,
-    function(batch){
-      load_mapping_hdf5(
-        hdf5_nat, 
-        batch = batch,
-        reads_ids = mapping_nat[contig %in% "lf_contig3",][, read_id]
-  )
-    }
-  ) %>% 
-  rbindlist()
-
-# Plot of normalised dacs of a read
-dacs_nat[read_id == unique(dacs_nat$read_id)[1],][
-    , dacs_norm := (V1 - mean(V1))/sd(V1), by = read_id
-  ] %>% 
-  ggplot(aes(x = pos, y = dacs_norm)) +
-  geom_line() +
-  theme_minimal()
-
-# Load in reference mappings
+# Append reference mappings
 add_mapping_to_dacs <- function(dacs, mappings, type){
   dacs[
       mappings, on = "read_id", `:=`(contig = i.contig, start = i.start)
@@ -232,15 +202,11 @@ add_mapping_to_dacs <- function(dacs, mappings, type){
   , dacs_norm := (V1 - mean(V1))/sd(V1), by = read_id
 ]
 }
-signal_mappings <- add_mapping_to_dacs(dacs_pcr, mapping_pcr, "pcr") %>% 
-  group_nest_dt(contig_id, contig_index, contig, .key = "pcr")
 
-signal_mappings2 <- add_mapping_to_dacs(dacs_nat, mapping_nat, "nat") %>% 
-  group_nest_dt(contig_id, contig_index, contig, .key = "nat")
-
-arg$min_u_val <- 1e-8
-signal_mappings[
-    signal_mappings2, on = "contig_id", nat := i.nat
+# Calculate mean difference and u-test value
+calculate_current_diff <- function(dt1, dt2, min_u_val){
+  dt1[
+      dt2, on = "contig_id", nat := i.nat
   ][
     , mean_nat := lapply(nat, function(x){mean(x$dacs_norm, na_rm = TRUE)}) %>% unlist()
   ][
@@ -248,9 +214,9 @@ signal_mappings[
   ][
     , mean_dif := mean_nat - mean_pcr
   ][
-    , n_nat := lapply(nat, nrow) %>% unlist()
+      , n_nat := lapply(nat, nrow) %>% lapply(function(x) ifelse(is.null(x), NA, x)) %>% unlist()
   ][
-    , n_pcr := lapply(pcr, nrow) %>% unlist()
+      , n_pcr := lapply(pcr, nrow) %>% lapply(function(x) ifelse(is.null(x), NA, x)) %>% unlist()
   ][
     , u_val := mapply(FUN = function(nat, pcr){
       if(length(nat$dacs_norm) > 0 & length(pcr$dacs_norm) > 0) {
