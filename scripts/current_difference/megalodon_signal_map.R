@@ -74,10 +74,11 @@ arg$signal_mapping_pcr <- "/shared-nfs/SH/samples/zymo/megalodon/pcr_test/signal
 arg$signal_mapping_nat <- "/shared-nfs/SH/samples/zymo/megalodon/nat_test2/signal_mappings.hdf5"
 arg$out <- "/shared-nfs/SH/samples/zymo/current_difference"
 arg$contig_plot <- "lf_contig3"
-arg$min_u_val <- 1e-11
-arg$u_val_weight_window <- 3 # val*2 + 1
-arg$u_val_weight_dropoff <- 0.75 
-
+arg$min_u_val <- 1e-12
+arg$u_val_weight_window <- 4 # val*2 + 1
+arg$u_val_weight_dropoff <- 0.9
+arg$overwrite <- TRUE
+arg$min_mappings <- 3
 
 ###############################################################################
 # Import signal mappings
@@ -171,27 +172,7 @@ load_mapping_hdf5 <- function(hdf5_file, batch, reads_ids = NA){
     by = eval(names(Ref_to_signal)[!(names(Ref_to_signal) %in% c("dac"))])
   ] %>% 
     setnames("V1", "dac")
-  # dacs_test <- 
-  #   mapply(
-  #     function(len, end, id, ref, pos){
-  #       list(
-  #         dac <- dacs$dacs[(end-len+1):end],
-  #         dac_pos = (end-len+1):(end),
-  #         read_id = rep(id, len),
-  #         ref = rep(ref, len),
-  #         pos = rep(pos, len),
-  #         batch = rep(batch, len)
-  #       )
-  #     },
-  #     Ref_to_signal$n_dac,
-  #     Ref_to_signal$start,
-  #     Ref_to_signal$read_id,
-  #     Ref_to_signal$ref,
-  #     Ref_to_signal$pos,
-  #     
-  #     SIMPLIFY = FALSE
-  #   ) %>% 
-  #   rbindlist()
+  
   log_success("Finished processing {batch}")
   return(Ref_to_signal)
 }
@@ -219,7 +200,7 @@ add_mapping_to_dacs <- function(dacs, mappings, type){
 }
 
 # Calculate mean difference and u-test value
-calculate_current_diff <- function(dt1, dt2, min_u_val){
+calculate_current_diff <- function(dt1, dt2, min_u_val, min_cov = 3){
   dt1[
       dt2, on = "contig_id", nat := i.nat
     ][
@@ -233,14 +214,21 @@ calculate_current_diff <- function(dt1, dt2, min_u_val){
     ][
       , n_pcr := lapply(pcr, nrow) %>% lapply(function(x) ifelse(is.null(x), NA, x)) %>% unlist()
     ][
-      , u_val := mapply(FUN = function(nat, pcr){
-        if(length(nat$dacs_norm) > 0 & length(pcr$dacs_norm) > 0) {
-          wilcox.test(nat$dacs_norm, pcr$dacs_norm)$p.value
-        } else {
-          NA
-        }},
+      , n_nat_map := lapply(nat, function(x) x$read_id %>% unique %>% length) %>% unlist()
+    ][
+      , n_pcr_map := lapply(pcr, function(x) x$read_id %>% unique %>% length) %>% unlist()
+    ][
+      , u_val := mapply(FUN = function(nat, pcr, n_nat_map, n_pcr_map){
+          if(n_nat_map >= min_cov & n_pcr_map >= min_cov) {
+            wilcox.test(nat$dacs_norm, pcr$dacs_norm)$p.value
+          } else {
+            NA
+          }
+        },
         nat,
-        pcr
+        pcr,
+        n_nat_map,
+        n_pcr_map
       )
     ][
       , u_val_weighted := rolling_mean(u_val, n = arg$u_val_weight_window, weigth_dropoff = arg$u_val_weight_dropoff)
@@ -250,10 +238,6 @@ calculate_current_diff <- function(dt1, dt2, min_u_val){
       , event := u_val < min_u_val
     ][
       , event_weighted := u_val_weighted_log < min_u_val*1e3
-    ][
-      , n_nat_map := lapply(nat, function(x) x$read_id %>% unique %>% length) %>% unlist()
-    ][
-      , n_pcr_map := lapply(pcr, function(x) x$read_id %>% unique %>% length) %>% unlist()
     ]
 }
 
@@ -283,7 +267,7 @@ plot_events <- function(dt){
       x = "Contig Position",
       y = "NAT vs. PCR (Mean difference)"
     )  + 
-    scale_size_manual(values = c(0.9, 3)) +
+    scale_size_manual(values = c(0.4, 2)) +
     scale_fill_manual(values = plot_col) +
     guides_format
   
@@ -308,8 +292,8 @@ plot_events <- function(dt){
     ggplot(aes(x = n_pcr, y = n_nat, col = event_weighted, fill = event_weighted)) +
     #geom_point_default +
     labs(
-      x = "PCR current values at contig position",
-      y = "NAT current values at contig position"
+      x = "PCR dacs",
+      y = "NAT dacs"
     ) + 
     geom_point_default +
     stat_density_2d_filled(
@@ -328,8 +312,8 @@ plot_events <- function(dt){
     filter(!is.na(event_weighted)) %>% 
     ggplot(aes(x = n_pcr_map, y = n_nat_map, col = event, fill = event_weighted)) +
     labs(
-      x = "Number of PCR reads mapped to contig position",
-      y = "Number of NAT reads mapped to contig position"
+      x = "PCR coverage",
+      y = "NAT coverage"
     ) + 
     geom_point_default +
     # stat_density_2d_filled(
@@ -350,7 +334,7 @@ plot_events <- function(dt){
     ggplot(aes(y = mappings, x = u_val_weighted_log, col = event_weighted)) +
     labs(
       x = "U-value",
-      y = "Proportion of PCR to NAT reads mapped"
+      y = "nr. PCR / nr. NAT"
     ) + 
     geom_point_default +
     scale_x_log10() +
@@ -379,7 +363,6 @@ plot_events <- function(dt){
   return(p_all)
 }
 
-
 # Importing reads to reference mappings
 mapping_pcr <- fread("/shared-nfs/SH/samples/zymo/megalodon/pcr_test/mappings_sorted_view.txt") %>% 
   select(V1, V3, V4, V2) %>% 
@@ -395,56 +378,105 @@ mapping_nat <- fread("/shared-nfs/SH/samples/zymo/megalodon/nat_test2/mappings_s
     direction = ifelse(direction == 16, "fwd", "rev")
   )
 
-# Loading signal mappings
-log_info("Processing PCR mappings")
-hdf5_pcr <- H5Fopen(arg$signal_mapping_pcr)
-dacs_pcr <- h5ls(hdf5_pcr) %>% filter(group == "/Batches") %>% pull(name) %>% 
-  lapply(
-    function(batch){
-      load_mapping_hdf5(
-        hdf5_pcr, 
-        batch = batch,
-        #reads_ids = mapping_pcr[contig %in% "lf_contig3",][, read_id]
-      )
-    }
-  ) %>% 
-  rbindlist()
-h5closeAll()
-rm(hdf5_pcr)
+###############################################################################
+# PCR reads
+###############################################################################
 
-log_info("Processing NAT mappings")
-hdf5_nat <- H5Fopen(arg$signal_mapping_nat)
-dacs_nat <- h5ls(hdf5_nat) %>% filter(group == "/Batches") %>% pull(name) %>% 
-  lapply(
-    function(batch){
-      load_mapping_hdf5(
-        hdf5_nat, 
-        batch = batch,
-        #reads_ids = mapping_nat[contig %in% "lf_contig3",][, read_id]
-      )
-    }
-  ) %>% 
-  rbindlist()
-h5closeAll()
-rm(hdf5_nat)
-# Add mapping mapping to reference
-signal_mappings <- add_mapping_to_dacs(dacs_pcr, mapping_pcr, "pcr") %>% 
-  group_nest_dt(contig_id, contig_index, contig, direction, .key = "pcr")
+if (!file.access(glue("{arg$out}/singal_mappings_pcr.tsv"), mode = 4) == 0 | arg$overwrite) {
+  # Loading signal mappings
+  log_info("Processing PCR mappings")
+  hdf5_pcr <- H5Fopen(arg$signal_mapping_pcr)
+  dacs_pcr <- h5ls(hdf5_pcr) %>% filter(group == "/Batches") %>% pull(name) %>% 
+    lapply(
+      function(batch){
+        load_mapping_hdf5(
+          hdf5_pcr, 
+          batch = batch,
+          reads_ids = mapping_pcr[contig %in% "lf_contig3",][, read_id]
+        )
+      }
+    ) %>% 
+    rbindlist()
+  h5closeAll()
+  rm(hdf5_pcr)
+  
+  signal_mappings_pcr <- add_mapping_to_dacs(dacs_pcr, mapping_pcr, "pcr") 
+  
+  # Save signal mappings
+  fwrite(
+    signal_mappings_pcr,
+    glue("{arg$out}/singal_mappings_pcr.tsv")
+  )
+  
+  signal_mappings_pcr <- signal_mappings_pcr %>% 
+    group_nest_dt(contig_id, contig_index, contig, direction, .key = "pcr")
+    
 
-signal_mappings2 <- add_mapping_to_dacs(dacs_nat, mapping_nat, "nat") %>% 
-  group_nest_dt(contig_id, contig_index, contig, direction, .key = "nat")
+} else {
+  signal_mappings_pcr <- fread(glue("{arg$out}/singal_mappings_pcr.tsv")) %>% 
+    group_nest_dt(contig_id, contig_index, contig, direction, .key = "pcr")
+}
 
-calculate_current_diff(signal_mappings, signal_mappings2, arg$min_u_val)
+###############################################################################
+# NAT reads
+###############################################################################
 
-# Save processed signal mappings
-fwrite(
-  signal_mappings[
-    , unlist(nat, recursive = FALSE), 
-    by = eval(names(signal_mappings)[!(names(signal_mappings) %in% c("pcr", "nat"))])],
-  glue("{arg$out}/current_difference.tsv")
-)
+if (!file.access(glue("{arg$out}/singal_mappings_nat.tsv"), mode = 4) == 0 | arg$overwrite) {
+  log_info("Processing NAT mappings")
+  hdf5_nat <- H5Fopen(arg$signal_mapping_nat)
+  dacs_nat <- h5ls(hdf5_nat) %>% filter(group == "/Batches") %>% pull(name) %>% 
+    lapply(
+      function(batch){
+        load_mapping_hdf5(
+          hdf5_nat, 
+          batch = batch,
+          reads_ids = mapping_nat[contig %in% "lf_contig3",][, read_id]
+        )
+      }
+    ) %>% 
+    rbindlist()
+  
+  h5closeAll()
+  rm(hdf5_nat)
+  # Add mapping mapping to reference
+  signal_mappings_nat <- add_mapping_to_dacs(dacs_nat, mapping_nat, "nat") 
+  
+  # Save signal mappings
+  fwrite(
+    signal_mappings_nat,
+    glue("{arg$out}/singal_mappings_nat.tsv")
+  )
+  
+  signal_mappings_nat <- signal_mappings_nat %>% 
+    group_nest_dt(contig_id, contig_index, contig, direction, .key = "nat")
+  
+} else {
+  signal_mappings_nat <- fread(glue("{arg$out}/singal_mappings_nat.tsv")) %>% 
+    group_nest_dt(contig_id, contig_index, contig, direction, .key = "nat")
+}
 
-p_all <- plot_events(signal_mappings[direction == "rev", ])
+###############################################################################
+# Calculate current difference
+###############################################################################
+
+if (!file.access(glue("{arg$out}/current_difference.tsv"), mode = 4) == 0 | arg$overwrite) {
+  current_difference <- calculate_current_diff(
+      signal_mappings_pcr, 
+      signal_mappings_nat, 
+      arg$min_u_val
+    )
+  current_difference[, `:=`(nat = NULL, pcr = NULL)]
+   
+  # Save processed signal mappings
+  fwrite(
+    current_difference,
+    glue("{arg$out}/current_difference.tsv")
+  )
+} else {
+  current_difference <- fread(glue("{arg$out}/current_difference.tsv"))
+}
+
+p_all <- plot_events(current_difference)
 
 ggsave(
   width = unit(8, "cm"),
@@ -467,7 +499,9 @@ signal_mappings_pcr_1 <- add_mapping_to_dacs(dacs_pcr[batch == "Batch_1", ], map
 calculate_current_diff(signal_mappings_pcr_0, signal_mappings_pcr_1, arg$min_u_val)
 
 
-p_pcr_vs_pcr <- plot_events(signal_mappings_pcr_0)
+plot_events(signal_mappings_pcr_0[
+  n_nat_map > 5 & n_pcr_map > 5
+])
 
 ggsave(
   width = unit(8, "cm"),
@@ -476,4 +510,16 @@ ggsave(
   filename = glue("{arg$out}/current_difference_pcr_vs_pcr_{arg$contig_plot}.png"), 
   device = "png"
 )
+
+
+
+###############################################################################
+# Low u-value positions
+###############################################################################
+
+plot_events(current_difference[contig_index %in% 7.15e4:7.25e4, ][
+  n_nat_map > 5 & n_pcr_map > 5
+])
+
+
 
