@@ -149,34 +149,51 @@ load_mapping_hdf5 <- function(hdf5_file, batch, reads_ids = NA){
       , pos := 1:.N, by = read_id
     ]
   log_info("Adding reference mapping to dacs")
+  
   if (!is.na(reads_ids)) {
     Ref_to_signal <- Ref_to_signal %>% 
       subset(read_id %in% reads_ids)
   }
-
-  dacs_test <- 
-    mapply(
-      function(len, end, id, ref, pos){
-        list(
-          dac <- dacs$dacs[(end-len+1):end],
-          dac_pos = (end-len+1):(end),
-          read_id = rep(id, len),
-          ref = rep(ref, len),
-          pos = rep(pos, len),
-          batch = rep(batch, len)
-        )
+  dacs <- dacs$dacs
+  Ref_to_signal <- Ref_to_signal[
+    , dac := mapply(
+      function(len, end){
+        dac <- dacs[(end-len+1):end]
       },
-      Ref_to_signal$n_dac,
-      Ref_to_signal$start,
-      Ref_to_signal$read_id,
-      Ref_to_signal$ref,
-      Ref_to_signal$pos,
-      
+      n_dac,
+      start,
       SIMPLIFY = FALSE
-    ) %>% 
-    rbindlist()
+    ) 
+  ][
+    , batch := batch
+  ][
+    , unlist(dac, recursive = FALSE), 
+    by = eval(names(Ref_to_signal)[!(names(Ref_to_signal) %in% c("dac"))])
+  ] %>% 
+    setnames("V1", "dac")
+  # dacs_test <- 
+  #   mapply(
+  #     function(len, end, id, ref, pos){
+  #       list(
+  #         dac <- dacs$dacs[(end-len+1):end],
+  #         dac_pos = (end-len+1):(end),
+  #         read_id = rep(id, len),
+  #         ref = rep(ref, len),
+  #         pos = rep(pos, len),
+  #         batch = rep(batch, len)
+  #       )
+  #     },
+  #     Ref_to_signal$n_dac,
+  #     Ref_to_signal$start,
+  #     Ref_to_signal$read_id,
+  #     Ref_to_signal$ref,
+  #     Ref_to_signal$pos,
+  #     
+  #     SIMPLIFY = FALSE
+  #   ) %>% 
+  #   rbindlist()
   log_success("Finished processing {batch}")
-  return(dacs_test)
+  return(Ref_to_signal)
 }
 
 
@@ -187,7 +204,7 @@ load_mapping_hdf5 <- function(hdf5_file, batch, reads_ids = NA){
 # Append reference mappings
 add_mapping_to_dacs <- function(dacs, mappings, type){
   dacs[
-      mappings, on = "read_id", `:=`(contig = i.contig, start = i.start)
+      mappings, on = .(read_id), `:=`(contig = i.contig, start = i.start, direction = i.direction)
     ][
       , type := type
     ][
@@ -197,7 +214,7 @@ add_mapping_to_dacs <- function(dacs, mappings, type){
     ][
       , contig_id := paste0(contig, "_", contig_index)
     ][
-      , dacs_norm := (V1 - mean(V1))/sd(V1), by = read_id
+      , dacs_norm := (dac - mean(dac))/sd(dac), by = read_id
     ]
 }
 
@@ -365,12 +382,18 @@ plot_events <- function(dt){
 
 # Importing reads to reference mappings
 mapping_pcr <- fread("/shared-nfs/SH/samples/zymo/megalodon/pcr_test/mappings_sorted_view.txt") %>% 
-  select(V1, V3, V4) %>% 
-  setnames(c("read_id", "contig", "start"))
+  select(V1, V3, V4, V2) %>% 
+  setnames(c("read_id", "contig", "start", "direction")) %>% 
+  mutate(
+    direction = ifelse(direction == 16, "fwd", "rev")
+  )
 
 mapping_nat <- fread("/shared-nfs/SH/samples/zymo/megalodon/nat_test2/mappings_sorted_view.txt") %>% 
-  select(V1, V3, V4) %>% 
-  setnames(c("read_id", "contig", "start"))
+  select(V1, V3, V4, V2) %>% 
+  setnames(c("read_id", "contig", "start", "direction")) %>% 
+  mutate(
+    direction = ifelse(direction == 16, "fwd", "rev")
+  )
 
 # Loading signal mappings
 log_info("Processing PCR mappings")
@@ -381,11 +404,13 @@ dacs_pcr <- h5ls(hdf5_pcr) %>% filter(group == "/Batches") %>% pull(name) %>%
       load_mapping_hdf5(
         hdf5_pcr, 
         batch = batch,
-        reads_ids = mapping_pcr[contig %in% "lf_contig3",][, read_id]
+        #reads_ids = mapping_pcr[contig %in% "lf_contig3",][, read_id]
       )
     }
   ) %>% 
   rbindlist()
+h5closeAll()
+rm(hdf5_pcr)
 
 log_info("Processing NAT mappings")
 hdf5_nat <- H5Fopen(arg$signal_mapping_nat)
@@ -395,18 +420,19 @@ dacs_nat <- h5ls(hdf5_nat) %>% filter(group == "/Batches") %>% pull(name) %>%
       load_mapping_hdf5(
         hdf5_nat, 
         batch = batch,
-        reads_ids = mapping_nat[contig %in% "lf_contig3",][, read_id]
+        #reads_ids = mapping_nat[contig %in% "lf_contig3",][, read_id]
       )
     }
   ) %>% 
   rbindlist()
-
-
+h5closeAll()
+rm(hdf5_nat)
+# Add mapping mapping to reference
 signal_mappings <- add_mapping_to_dacs(dacs_pcr, mapping_pcr, "pcr") %>% 
-  group_nest_dt(contig_id, contig_index, contig, .key = "pcr")
+  group_nest_dt(contig_id, contig_index, contig, direction, .key = "pcr")
 
 signal_mappings2 <- add_mapping_to_dacs(dacs_nat, mapping_nat, "nat") %>% 
-  group_nest_dt(contig_id, contig_index, contig, .key = "nat")
+  group_nest_dt(contig_id, contig_index, contig, direction, .key = "nat")
 
 calculate_current_diff(signal_mappings, signal_mappings2, arg$min_u_val)
 
@@ -418,7 +444,7 @@ fwrite(
   glue("{arg$out}/current_difference.tsv")
 )
 
-p_all <- plot_events(signal_mappings)
+p_all <- plot_events(signal_mappings[direction == "rev", ])
 
 ggsave(
   width = unit(8, "cm"),
@@ -427,8 +453,6 @@ ggsave(
   filename = glue("{arg$out}/current_difference_{arg$contig_plot}.png"), 
   device = "png"
 )
-
-
 
 ###############################################################################
 # Evaluation of PCR batch 1 vs batch 0
