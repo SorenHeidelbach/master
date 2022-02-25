@@ -95,10 +95,16 @@ scp -r \
   "sheide17@student.aau.dk@IP:/path/on/server/two/directionary"
 
 scp -r \
-  "sheide17@student.aau.dk@172.19.8.14:/user/student.aau.dk/sheide17/projects/current_difference/zymo/megalodon_unmod_v2/signal_mappings.hdf5" \
-  "/shared-nfs/SH/samples/zymo/megalodon_pcr_test"
+  "/shared-nfs/AAU_CS/211026_NAT_SH_AD_Zymo/AD1/20211026_1635_MN24067_FAQ39154_ae29042a/fast5/"  \
+  "sheide17@student.aau.dk@172.19.8.14:/user/student.aau.dk/sheide17/projects/current_difference/AD/fast5/ae29042a"
 
+scp -r \
+  "/shared-nfs/AAU_CS/211026_NAT_SH_AD_Zymo/AD1/20211027_0906_MN24067_FAQ39154_c0f09e90/fast5/" \
+  "sheide17@student.aau.dk@172.19.8.14:/user/student.aau.dk/sheide17/projects/current_difference/AD/fast5/c0f09e90"
 
+scp -r \
+  "/shared-nfs/AAU_CS/2022-02-SH/digester/pacbio/assembly.fasta" \
+  "sheide17@student.aau.dk@172.19.8.14:/user/student.aau.dk/sheide17/projects/current_difference/AD"
 # =================================================================================================
 # = Add executables directionary to PATH
 # Add conda to PATH
