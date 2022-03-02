@@ -1,5 +1,6 @@
 #!/usr/bin/Rscript
 .libPaths( c( "/shared-nfs/SH/software/Rlib" , .libPaths()))
+
 setwd(here::here())
 pacman::p_load(
   "data.table",
@@ -11,7 +12,8 @@ pacman::p_load(
   "stringr",
   "patchwork",
   "logger",
-  "glue"
+  "glue",
+  "pbapply"
 )
 
 ###############################################################################
@@ -204,21 +206,60 @@ calculate_current_diff <- function(dt1, dt2, min_u_val, min_cov = 3){
   dt1[
       dt2, on = "contig_id", nat := i.nat
     ][
-      , mean_nat := lapply(nat, function(x){mean(x$dacs_norm, na_rm = TRUE)}) %>% unlist()
+      , mean_nat := pblapply(
+          nat,
+          function(x){mean(x$dacs_norm, na_rm = TRUE)},
+          cl = ifelse(parallel, arg$threads, NULL)) %>% 
+        unlist()
     ][
-      , mean_pcr := lapply(pcr, function(x){mean(x$dacs_norm, na_rm = TRUE)}) %>% unlist()
+      , mean_pcr := pblapply(
+          pcr, 
+          function(x){mean(x$dacs_norm, na_rm = TRUE)},
+          cl = ifelse(parallel, arg$threads, NULL)) %>% 
+        unlist()
     ][
       , mean_dif := mean_nat - mean_pcr
+    ]
+  log_info("Dac number and coverage")
+  parallel = FALSE
+  dt1[
+      , n_nat := pblapply(
+          nat, 
+          nrow,
+          cl = if(parallel) arg$threads else NULL) %>% 
+        pblapply(
+          X = .,
+          function(x){ifelse(is.null(x), NA, x)},
+          cl = if(parallel) arg$threads else NULL) %>% 
+        unlist()
     ][
-      , n_nat := lapply(nat, nrow) %>% lapply(function(x) ifelse(is.null(x), NA, x)) %>% unlist()
+      , n_pcr := pblapply(
+          pcr,
+          nrow,
+          cl = if(parallel) arg$threads else NULL) %>% 
+        pblapply(
+          X = .,
+          function(x){ifelse(is.null(x), NA, x)},
+          cl = if(parallel) arg$threads else NULL) %>% 
+        unlist()
     ][
-      , n_pcr := lapply(pcr, nrow) %>% lapply(function(x) ifelse(is.null(x), NA, x)) %>% unlist()
+      , n_nat_map := pblapply(
+          nat, 
+          function(x){x$read_id %>% unique %>% length},
+          cl = if(parallel) arg$threads else NULL) %>% 
+        unlist()
     ][
-      , n_nat_map := lapply(nat, function(x) x$read_id %>% unique %>% length) %>% unlist()
-    ][
-      , n_pcr_map := lapply(pcr, function(x) x$read_id %>% unique %>% length) %>% unlist()
-    ][
-      , u_val := mapply(FUN = function(nat, pcr, n_nat_map, n_pcr_map){
+      , n_pcr_map := pblapply(
+          pcr, 
+          function(x){x$read_id %>% unique %>% length},
+          cl = if(parallel) arg$threads else NULL) %>% 
+        unlist()
+    ]
+  parallel = TRUE
+  log_info("Wilcox test")
+  dt1[
+      , u_val := mcmapply(
+        FUN = function(nat, pcr, n_nat_map, n_pcr_map){
           if(n_nat_map >= min_cov & n_pcr_map >= min_cov) {
             wilcox.test(nat$dacs_norm, pcr$dacs_norm)$p.value
           } else {
@@ -228,7 +269,8 @@ calculate_current_diff <- function(dt1, dt2, min_u_val, min_cov = 3){
         nat,
         pcr,
         n_nat_map,
-        n_pcr_map
+        n_pcr_map,
+        cl = arg$threads
       )
     ][
       , u_val_weighted := rolling_mean(u_val, n = arg$u_val_weight_window, weigth_dropoff = arg$u_val_weight_dropoff)
@@ -386,13 +428,17 @@ if (!file.access(glue("{arg$out}/singal_mappings_pcr.tsv"), mode = 4) == 0 | arg
   # Loading signal mappings
   log_info("Processing PCR mappings")
   hdf5_pcr <- H5Fopen(arg$signal_mapping_pcr)
-  dacs_pcr <- h5ls(hdf5_pcr) %>% filter(group == "/Batches") %>% pull(name) %>% 
-    lapply(
+  signal_mappings_pcr_unnested <- h5ls(hdf5_pcr) %>% filter(group == "/Batches") %>% pull(name) %>% 
+    pblapply(
+      mc.preschedule = FALSE,
+      cl = arg$threads,
       function(batch){
         load_mapping_hdf5(
           hdf5_pcr, 
           batch = batch,
-          reads_ids = mapping_pcr[contig %in% "lf_contig3",][, read_id]
+          mappings = mapping_pcr, 
+          type = "pcr",
+          reads_ids = mapping_pcr[contig %in% arg$contig_plot,][, read_id]
         )
       }
     ) %>% 
@@ -422,15 +468,20 @@ if (!file.access(glue("{arg$out}/singal_mappings_pcr.tsv"), mode = 4) == 0 | arg
 ###############################################################################
 
 if (!file.access(glue("{arg$out}/singal_mappings_nat.tsv"), mode = 4) == 0 | arg$overwrite) {
-  log_info("Processing NAT mappings")
+  log_info("Processing NAT signal mappings")
   hdf5_nat <- H5Fopen(arg$signal_mapping_nat)
-  dacs_nat <- h5ls(hdf5_nat) %>% filter(group == "/Batches") %>% pull(name) %>% 
-    lapply(
+  signal_mappings_nat_unnested <- h5ls(hdf5_nat) %>% filter(group == "/Batches") %>% pull(name) %>% 
+    pblapply(
+      mc.preschedule = FALSE,
+      cl = arg$threads,
+      mc.silent = FALSE,
       function(batch){
         load_mapping_hdf5(
           hdf5_nat, 
           batch = batch,
-          reads_ids = mapping_nat[contig %in% "lf_contig3",][, read_id]
+          mappings = mapping_nat, 
+          type = "nat",
+          reads_ids = mapping_nat[contig %in% arg$contig_plot,][, read_id][1:3415]
         )
       }
     ) %>% 
