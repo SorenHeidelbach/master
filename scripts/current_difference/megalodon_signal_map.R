@@ -44,11 +44,11 @@ rolling_mean <- function(x, n = 2, weight_dropoff = 0.75){
   out <- pblapply(
       seq_along(x),
       function(i){
-      values <- x[max(1,i-n):min(max_i, i+n)]
-      weigths_indexed <- weigths[max(1, n - i + 2):min(n*2 + 1, n + 1 + max_i - i)]
-      weigths_indexed <- weigths_indexed/sum(weigths_indexed)
+        values <- x[max(1,i-n):min(max_i, i+n)]
+        weigths_indexed <- weigths[max(1, n - i + 2):min(n*2 + 1, n + 1 + max_i - i)]
+        weigths_indexed <- weigths_indexed/sum(weigths_indexed)
         out <- sum(values * weigths_indexed, na.rm = TRUE)
-    }
+      }
     ) %>%  unlist()
   out <- 10 ^ out
   return(out)  
@@ -62,11 +62,11 @@ rolling_mean_log <- function(x, n = 2, weight_dropoff = 0.75, base = 10){
   out <- pblapply(
     seq_along(x),
     function(i){
-    values <- log(x[max(1,i-n):min(max_i, i+n)], base = base)
-    weigths_indexed <- weigths[max(1, n - i + 2):min(n*2 + 1, n + 1 + max_i - i)]
-    weigths_indexed <- weigths_indexed/sum(weigths_indexed)
+      values <- log(x[max(1,i-n):min(max_i, i+n)], base = base)
+      weigths_indexed <- weigths[max(1, n - i + 2):min(n*2 + 1, n + 1 + max_i - i)]
+      weigths_indexed <- weigths_indexed/sum(weigths_indexed)
       out <- 10 ^ sum(values * weigths_indexed, na.rm = TRUE)
-  }
+    }
   ) %>%  unlist()
   return(out)  
 }
@@ -297,12 +297,12 @@ calculate_current_diff <- function(
   dt1[
       , u_val := mcmapply(
         FUN = function(nat, pcr, n_nat_map, n_pcr_map){
-          if(n_nat_map >= min_cov & n_pcr_map >= min_cov) {
-            wilcox.test(nat$dacs_norm, pcr$dacs_norm)$p.value
-          } else {
-            NA
-          }
-        },
+            if(n_nat_map >= min_cov & n_pcr_map >= min_cov) {
+              wilcox.test(nat$dacs_norm, pcr$dacs_norm)$p.value
+            } else {
+              NA
+            }
+          },
         nat,
         pcr,
         n_nat_map,
@@ -434,7 +434,7 @@ plot_events <- function(dt){
     scale_y_log10() +
     scale_color_manual(values = plot_col) +
     guides_format
-  
+
   return(list(p1.1, p1.2, p1.3, p1.4, p1.5, p1.6))
 }
 
@@ -486,9 +486,9 @@ if (!file.access(glue("{arg$out}/singal_mappings_pcr.tsv"), mode = 4) == 0 | arg
     rbindlist()
   h5closeAll()
   rm(hdf5_pcr)
-  
+
   if (arg$save_intermediate_files) {
-  # Save signal mappings
+    # Save signal mappings
     log_info("Saving processed PCR dacs")
     fwrite(signal_mappings_pcr_unnested, glue("{arg$out}/singal_mappings_pcr.tsv"))
   }
@@ -529,9 +529,9 @@ if (!file.access(glue("{arg$out}/singal_mappings_nat.tsv"), mode = 4) == 0 | arg
     rbindlist()
   h5closeAll()
   rm(hdf5_nat)
-  
+
   if (arg$save_intermediate_files) {
-  # Save signal mappings
+    # Save signal mappings
     log_info("Saving processed NAT dacs")
     fwrite(signal_mappings_nat_unnested, glue("{arg$out}/singal_mappings_nat.tsv"))
   }
@@ -681,7 +681,7 @@ plot_layout(guides = "collect") +
     title =  "Estimation of event cut-off"
   ) & 
   theme_bw()
-
+  
 
 
 
