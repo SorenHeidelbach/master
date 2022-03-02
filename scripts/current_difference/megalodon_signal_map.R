@@ -83,7 +83,11 @@ arg$overwrite <- TRUE
 arg$min_mappings <- 3
 
 ###############################################################################
-# Import signal mappings
+##                                                                           ##
+##                                                                           ##
+##                     Functions                                             ##
+##                                                                           ##
+##                                                                           ##
 ###############################################################################
 
 # Load in reference
@@ -186,6 +190,7 @@ load_mapping_hdf5 <- function(hdf5_file, batch, reads_ids = NA){
 
 # Append reference mappings
 add_mapping_to_dacs <- function(dacs, mappings, type){
+  log_info("Joining mappings")
   dacs[
       mappings, on = .(read_id), `:=`(contig = i.contig, start = i.start, direction = i.direction)
     ][
@@ -196,13 +201,25 @@ add_mapping_to_dacs <- function(dacs, mappings, type){
       , contig_index := start + pos
     ][
       , contig_id := paste0(contig, "_", contig_index)
-    ][
+    ]
+  log_info("Normalising dacs")
+  dacs[
       , dacs_norm := (dac - mean(dac))/sd(dac), by = read_id
     ]
 }
 
 # Calculate mean difference and u-test value
-calculate_current_diff <- function(dt1, dt2, min_u_val, min_cov = 3){
+calculate_current_diff <- function(
+  dt1, 
+  dt2, 
+  min_u_val, 
+  min_cov = 3, 
+  data_splits = 1,
+  parallel = TRUE){
+  # log_info("Setting up cluster")
+  # cl <- makeForkCluster(nnodes = arg$threads)
+  pboptions(nout = data_splits)
+  log_info("Mean difference")
   dt1[
       dt2, on = "contig_id", nat := i.nat
     ][
@@ -272,10 +289,12 @@ calculate_current_diff <- function(dt1, dt2, min_u_val, min_cov = 3){
         n_pcr_map,
         cl = arg$threads
       )
+    ]
+  log_info("Weighting p-values")
+  dt1[
+      , u_val_weighted := rolling_mean(u_val, n = arg$u_val_weight_window, weight_dropoff = arg$u_val_weight_dropoff)
     ][
-      , u_val_weighted := rolling_mean(u_val, n = arg$u_val_weight_window, weigth_dropoff = arg$u_val_weight_dropoff)
-    ][
-      , u_val_weighted_log := rolling_mean_log(u_val, n = arg$u_val_weight_window, weigth_dropoff = arg$u_val_weight_dropoff)
+      , u_val_weighted_log := rolling_mean_log(u_val, n = arg$u_val_weight_window, weight_dropoff = arg$u_val_weight_dropoff)
     ][
       , event := u_val < min_u_val
     ][
@@ -405,6 +424,14 @@ plot_events <- function(dt){
   return(p_all)
 }
 
+###############################################################################
+##                                                                           ##
+##                                                                           ##
+##                     Processing                                            ##
+##                                                                           ##
+##                                                                           ##
+###############################################################################
+
 # Importing reads to reference mappings
 mapping_pcr <- fread("/shared-nfs/SH/samples/zymo/megalodon/pcr_test/mappings_sorted_view.txt") %>% 
   select(V1, V3, V4, V2) %>% 
@@ -446,21 +473,21 @@ if (!file.access(glue("{arg$out}/singal_mappings_pcr.tsv"), mode = 4) == 0 | arg
   h5closeAll()
   rm(hdf5_pcr)
   
-  signal_mappings_pcr <- add_mapping_to_dacs(dacs_pcr, mapping_pcr, "pcr") 
-  
+  if (arg$save_intermediate_files) {
   # Save signal mappings
-  fwrite(
-    signal_mappings_pcr,
-    glue("{arg$out}/singal_mappings_pcr.tsv")
-  )
+    log_info("Saving processed PCR dacs")
+    fwrite(signal_mappings_pcr_unnested, glue("{arg$out}/singal_mappings_pcr.tsv"))
+  }
   
-  signal_mappings_pcr <- signal_mappings_pcr %>% 
+  signal_mappings_pcr <- signal_mappings_pcr_unnested %>% 
     group_nest_dt(contig_id, contig_index, contig, direction, .key = "pcr")
-    
+  log_success("Succesfully processed PCR dacs")
 
 } else {
+  log_info("Loading PCR dacs from previous run")
   signal_mappings_pcr <- fread(glue("{arg$out}/singal_mappings_pcr.tsv")) %>% 
     group_nest_dt(contig_id, contig_index, contig, direction, .key = "pcr")
+  log_success("Loaded PCR dacs")
 }
 
 ###############################################################################
@@ -486,24 +513,23 @@ if (!file.access(glue("{arg$out}/singal_mappings_nat.tsv"), mode = 4) == 0 | arg
       }
     ) %>% 
     rbindlist()
-  
   h5closeAll()
   rm(hdf5_nat)
-  # Add mapping mapping to reference
-  signal_mappings_nat <- add_mapping_to_dacs(dacs_nat, mapping_nat, "nat") 
   
+  if (arg$save_intermediate_files) {
   # Save signal mappings
-  fwrite(
-    signal_mappings_nat,
-    glue("{arg$out}/singal_mappings_nat.tsv")
-  )
-  
-  signal_mappings_nat <- signal_mappings_nat %>% 
+    log_info("Saving processed NAT dacs")
+    fwrite(signal_mappings_nat_unnested, glue("{arg$out}/singal_mappings_nat.tsv"))
+  }
+  signal_mappings_nat <- signal_mappings_nat_unnested %>% 
     group_nest_dt(contig_id, contig_index, contig, direction, .key = "nat")
+  log_success("Succesfully processed NAT dacs")
   
 } else {
+  log_info("Loading NAT dacs from previous run")
   signal_mappings_nat <- fread(glue("{arg$out}/singal_mappings_nat.tsv")) %>% 
     group_nest_dt(contig_id, contig_index, contig, direction, .key = "nat")
+  log_success("Loaded NAT dacs")
 }
 
 ###############################################################################
@@ -511,21 +537,29 @@ if (!file.access(glue("{arg$out}/singal_mappings_nat.tsv"), mode = 4) == 0 | arg
 ###############################################################################
 
 if (!file.access(glue("{arg$out}/current_difference.tsv"), mode = 4) == 0 | arg$overwrite) {
-  current_difference <- calculate_current_diff(
-      signal_mappings_pcr, 
+  log_info("Calculating current difference and statistics")
+  current_difference <- copy(signal_mappings_pcr)
+  calculate_current_diff(
+      current_difference, 
       signal_mappings_nat, 
       arg$min_u_val
     )
   current_difference[, `:=`(nat = NULL, pcr = NULL)]
    
   # Save processed signal mappings
+  log_info("Saving current difference")
   fwrite(
     current_difference,
     glue("{arg$out}/current_difference.tsv")
   )
+  log_success("Performed currrent difference")
 } else {
   current_difference <- fread(glue("{arg$out}/current_difference.tsv"))
 }
+
+###############################################################################
+# Plot
+###############################################################################
 
 p_all <- plot_events(current_difference)
 
@@ -537,21 +571,26 @@ ggsave(
   device = "png"
 )
 
+# plot_events(current_difference[contig_index %in% 7.15e4:7.25e4, ][
+#   n_nat_map > 5 & n_pcr_map > 5
+#   ])
+
 ###############################################################################
 # Evaluation of PCR batch 1 vs batch 0
 ###############################################################################
 
-signal_mappings_pcr_0 <- add_mapping_to_dacs(dacs_pcr[batch == "Batch_0", ], mapping_pcr, "pcr") %>% 
+signal_mappings_pcr_0 <- signal_mappings_pcr_unnested[batch == "Batch_0", ]%>% 
   group_nest_dt(contig_id, contig_index, contig, .key = "pcr")
 
-signal_mappings_pcr_1 <- add_mapping_to_dacs(dacs_pcr[batch == "Batch_1", ], mapping_pcr, "nat") %>% 
+signal_mappings_pcr_1 <- signal_mappings_pcr_unnested[batch == "Batch_1", ] %>% 
   group_nest_dt(contig_id, contig_index, contig, .key = "nat")
 
-calculate_current_diff(signal_mappings_pcr_0, signal_mappings_pcr_1, arg$min_u_val)
+current_difference_pcr <- copy(signal_mappings_pcr_0)
+calculate_current_diff(current_difference_pcr, signal_mappings_pcr_1, arg$min_u_val)
 
 
 plot_events(signal_mappings_pcr_0[
-  n_nat_map > 5 & n_pcr_map > 5
+  n_nat_map > 1 & n_pcr_map > 1
 ])
 
 ggsave(
@@ -631,9 +670,6 @@ plot_layout(guides = "collect") +
 
 
 
-plot_events(current_difference[contig_index %in% 7.15e4:7.25e4, ][
-  n_nat_map > 5 & n_pcr_map > 5
-])
 
 
 
