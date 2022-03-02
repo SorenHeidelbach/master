@@ -562,11 +562,74 @@ ggsave(
   device = "png"
 )
 
+###############################################################################
+# Evaluation of differenct U-value cut offs
+###############################################################################
+
+# pcr vs. pcr and nat vs. pcr plot function
+plot_PvP_NvP <- function(thresholds, col){
+  thresholds %>% 
+  lapply(
+    function(x){
+      n_NvP <- sum(current_difference[, ..col] < x, na.rm = TRUE)
+      n_PvP <- sum(current_difference_pcr[, ..col] < x, na.rm = TRUE)
+      list(
+        x,
+        n_NvP,
+        n_NvP / nrow(na.omit(current_difference[, ..col])), 
+        n_PvP, 
+        n_PvP / nrow(na.omit(current_difference_pcr[, ..col]))
+      )
+    }) %>% 
+  rbindlist() %>% 
+  setnames(paste0("V", 1:5), c("U_val", "n_NvP", "p_NvP", "n_PvP", "p_PvP")) %>%  
+  tidyr::pivot_longer(starts_with("p_"), values_to = "proportion", names_to = "type") %>% 
+  tidyr::pivot_longer(starts_with("n_"), values_to = "count", names_to = "type2") %>% 
+  filter(substr(type, 2, 4) == substr(type2, 2, 4)) %>%  
+  ggplot() +
+  aes(x = U_val, y = proportion, fill = type) +
+  geom_line() +
+  geom_point(shape = 21, size = 1.5) +
+  scale_x_log10() +
+  scale_y_log10(labels = percent) +
+  labs(
+    x = "P-value threshold",
+    y = "Proportion of events"
+  ) +
+  theme_bw()
+}
+
+# p-value
+p2.1 <-  10^-seq(-1, 20, by = 0.5) %>% 
+  plot_PvP_NvP(col = "u_val") +
+  labs(title = "P-value")
+
+# p-value weighted
+p2.2 <-  10^-seq(1, 20, by = 0.5) %>% 
+  plot_PvP_NvP(col = "u_val_weighted") +
+  labs(title = glue("P-value weighted, dropoff = {arg$dropoff}"))
+
+# p-value log weighted 
+p2.3 <-  10^-seq(1, 20, by = 0.5) %>% 
+  plot_PvP_NvP(col = "u_val_weighted_log") +
+  labs(title = glue("P-value log weighted, dropoff = {arg$dropoff}"))
+  
+# Mean difference cutoff
+p2.4 <- 10^-seq(-1, 8, by = 0.5) %>% 
+  plot_PvP_NvP("mean_dif") +
+  xlab("Mean difference threshold") +
+  labs(title = "Mean difference")
 
 
-###############################################################################
-# Low u-value positions
-###############################################################################
+p2.1 + p2.2 /
+p2.3 + p2.4
+plot_layout(guides = "collect") +
+  plot_annotation(
+    title =  "Estimation of event cut-off"
+  ) & 
+  theme_bw()
+
+
 
 plot_events(current_difference[contig_index %in% 7.15e4:7.25e4, ][
   n_nat_map > 5 & n_pcr_map > 5
