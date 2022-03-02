@@ -27,6 +27,7 @@ group_nest_dt <- function(dt, ..., .key = "data"){
   setnames(dt, old = "V1", new = .key)
   dt
 }
+
 # unnest version for data.table
 unnest_dt <- function(dt, col, id){
   stopifnot(is.data.table(dt))
@@ -36,33 +37,37 @@ unnest_dt <- function(dt, col, id){
 }
 
 # Calculate rolling mean with distance weigth decay
-rolling_mean <- function(x, n = 2, weigth_dropoff = 0.75){
+rolling_mean <- function(x, n = 2, weight_dropoff = 0.75){
   max_i <- length(x)
-  weigths <- lapply(1:n, function(x) weigth_dropoff^x) %>% unlist()
+  weigths <- lapply(1:n, function(x) weight_dropoff^x) %>% unlist()
   weigths <- c(weigths[length(weigths):1], 1, weigths)
-  out <- c()
-    for (i in seq_along(x)) {
+  out <- pblapply(
+      seq_along(x),
+      function(i){
       values <- x[max(1,i-n):min(max_i, i+n)]
       weigths_indexed <- weigths[max(1, n - i + 2):min(n*2 + 1, n + 1 + max_i - i)]
       weigths_indexed <- weigths_indexed/sum(weigths_indexed)
-      out <- c(out, sum(values * weigths_indexed))
+        out <- sum(values * weigths_indexed, na.rm = TRUE)
     }
+    ) %>%  unlist()
+  out <- 10 ^ out
   return(out)  
 }
 
 # Calculate rolling mean in log space with distance weigth decay
-rolling_mean_log <- function(x, n = 2, weigth_dropoff = 0.75, base = 10){
+rolling_mean_log <- function(x, n = 2, weight_dropoff = 0.75, base = 10){
   max_i <- length(x)
-  weigths <- lapply(1:n, function(x) weigth_dropoff^x) %>% unlist()
+  weigths <- lapply(1:n, function(x) weight_dropoff^x) %>% unlist()
   weigths <- c(weigths[length(weigths):1], 1, weigths)
-  out <- c()
-  for (i in seq_along(x)) {
+  out <- pblapply(
+    seq_along(x),
+    function(i){
     values <- log(x[max(1,i-n):min(max_i, i+n)], base = base)
     weigths_indexed <- weigths[max(1, n - i + 2):min(n*2 + 1, n + 1 + max_i - i)]
     weigths_indexed <- weigths_indexed/sum(weigths_indexed)
-    out <- c(out, sum(values * weigths_indexed))
+      out <- 10 ^ sum(values * weigths_indexed, na.rm = TRUE)
   }
-  out <-base ^ out
+  ) %>%  unlist()
   return(out)  
 }
 
@@ -73,14 +78,23 @@ rolling_mean_log <- function(x, n = 2, weigth_dropoff = 0.75, base = 10){
 arg <- list()
 arg$reference <- "/shared-nfs/SH/samples/zymo/Zymo-Isolates-SPAdes-Illumina.fasta"
 arg$signal_mapping_pcr <- "/shared-nfs/SH/samples/zymo/megalodon/pcr_test/signal_mappings.hdf5"
-arg$signal_mapping_nat <- "/shared-nfs/SH/samples/zymo/megalodon/nat_test2/signal_mappings.hdf5"
-arg$out <- "/shared-nfs/SH/samples/zymo/current_difference"
-arg$contig_plot <- "lf_contig3"
-arg$min_u_val <- 1e-12
-arg$u_val_weight_window <- 4 # val*2 + 1
-arg$u_val_weight_dropoff <- 0.9
+arg$signal_mapping_nat <- "/shared-nfs/SH/samples/zymo/megalodon/nat/signal_mappings.hdf5"
+arg$read_mapping_pcr <- "/shared-nfs/SH/samples/zymo/megalodon/pcr_test/mappings.sort.view.txt"
+arg$read_mapping_nat <- "/shared-nfs/SH/samples/zymo/megalodon/nat/mappings.sort.view.txt"
+arg$out <- "/shared-nfs/SH/samples/zymo/current_difference/weighting_test"
+arg$contig_plot <- c("bs_contig1", "lf_contig1", "ef_contig1", "sa_contig1")
 arg$overwrite <- TRUE
+arg$save_intermediate_files <- FALSE
+arg$min_u_val <- 1e-12
+arg$u_val_weight_window <- 2 # val*2 + 1
+arg$u_val_weight_dropoff <- 1
 arg$min_mappings <- 3
+arg$threads <- 20
+
+dir.create(arg$out, showWarnings = FALSE)
+jsonlite::write_json(arg, path = glue("{arg$out}/args.json"), pretty = TRUE)
+
+
 
 ###############################################################################
 ##                                                                           ##
@@ -93,14 +107,18 @@ arg$min_mappings <- 3
 # Load in reference
 ref <- read.fasta(arg$reference)
 
-load_mapping_hdf5 <- function(hdf5_file, batch, reads_ids = NA){
+load_mapping_hdf5 <- function(hdf5_file, 
+                              batch,
+                              mappings,
+                              type,
+                              reads_ids = NA){
   # Read dacs (current measurements)
   log_info("Loading data from {batch}")
   dacs <- h5read(hdf5_file, name = paste0("/Batches/", batch, "/Dacs")) %>% 
     data.table() %>% 
     setnames("dacs")
   
-  # Read Ref_to_signal (information of number of dacs mapping to each ref position)
+  # Read Ref_to_signal (Number of dacs mapping to each ref position)
   Ref_to_signal <- h5read(hdf5_file, name = paste0("/Batches/", batch, "/Ref_to_signal")) %>% 
     data.table() %>% 
     setnames("ref_to_signal")
@@ -178,6 +196,8 @@ load_mapping_hdf5 <- function(hdf5_file, batch, reads_ids = NA){
     by = eval(names(Ref_to_signal)[!(names(Ref_to_signal) %in% c("dac"))])
   ] %>% 
     setnames("V1", "dac")
+  
+  add_mapping_to_dacs(Ref_to_signal, mappings = mappings, type = type)
   
   log_success("Finished processing {batch}")
   return(Ref_to_signal)
@@ -318,7 +338,7 @@ plot_events <- function(dt){
   geom_point_default <- geom_jitter(alpha = 0.1, size = 0.1)
   
   
-  p_1 <- dt %>% 
+  p1.1 <- dt %>% 
     filter(!is.na(event_weighted)) %>% 
     ggplot(aes(x = contig_index, y = mean_dif)) +
     geom_hline(yintercept = 0) +
@@ -332,7 +352,7 @@ plot_events <- function(dt){
     scale_fill_manual(values = plot_col) +
     guides_format
   
-  p_2 <- dt %>% 
+  p1.2 <- dt %>% 
     filter(!is.na(event_weighted)) %>% 
     ggplot(aes(x = contig_index, y = u_val_weighted_log)) +
     geom_hline(yintercept = 1) +
@@ -348,7 +368,7 @@ plot_events <- function(dt){
     guides_format 
     
   
-  p_3 <- dt %>% 
+  p1.3 <- dt %>% 
     filter(!is.na(event_weighted)) %>% 
     ggplot(aes(x = n_pcr, y = n_nat, col = event_weighted, fill = event_weighted)) +
     #geom_point_default +
@@ -369,7 +389,7 @@ plot_events <- function(dt){
     scale_color_manual(values = plot_col) +
     guides_format
   
-  p_4 <- dt %>% 
+  p1.4 <- dt %>% 
     filter(!is.na(event_weighted)) %>% 
     ggplot(aes(x = n_pcr_map, y = n_nat_map, col = event, fill = event_weighted)) +
     labs(
@@ -387,7 +407,7 @@ plot_events <- function(dt){
     scale_fill_manual(values = plot_col) +
     guides_format
   
-  p_5 <- dt %>% 
+  p1.5 <- dt %>% 
     filter(!is.na(event_weighted)) %>% 
     mutate(
       mappings = n_pcr_map / n_nat_map
@@ -403,7 +423,7 @@ plot_events <- function(dt){
     scale_color_manual(values = plot_col) +
     guides_format
   
-  p_6 <- dt %>% 
+  p1.6 <- dt %>% 
     filter(!is.na(event_weighted)) %>% 
     ggplot(aes(x = mean_dif, y = u_val_weighted_log, col = event_weighted)) +
     labs(
@@ -415,13 +435,7 @@ plot_events <- function(dt){
     scale_color_manual(values = plot_col) +
     guides_format
   
-  p_all <- (p_1 | p_2) / (p_3 | p_4) / (p_5 | p_6) +
-    plot_layout(guides = "collect") +
-    plot_annotation(
-      title = paste0("Significant events in ", signal_mappings$contig %>% unique() %>% `[`(1)," (U-value threshold: ", arg$min_u_val, ")")
-    )  &
-    theme_bw() 
-  return(p_all)
+  return(list(p1.1, p1.2, p1.3, p1.4, p1.5, p1.6))
 }
 
 ###############################################################################
@@ -433,18 +447,18 @@ plot_events <- function(dt){
 ###############################################################################
 
 # Importing reads to reference mappings
-mapping_pcr <- fread("/shared-nfs/SH/samples/zymo/megalodon/pcr_test/mappings_sorted_view.txt") %>% 
+mapping_pcr <- fread(arg$read_mapping_pcr) %>% 
   select(V1, V3, V4, V2) %>% 
   setnames(c("read_id", "contig", "start", "direction")) %>% 
   mutate(
-    direction = ifelse(direction == 16, "fwd", "rev")
+    direction = if_else(direction == 16, "fwd", "rev")
   )
 
-mapping_nat <- fread("/shared-nfs/SH/samples/zymo/megalodon/nat_test2/mappings_sorted_view.txt") %>% 
+mapping_nat <- fread(arg$read_mapping_nat) %>% 
   select(V1, V3, V4, V2) %>% 
   setnames(c("read_id", "contig", "start", "direction")) %>% 
   mutate(
-    direction = ifelse(direction == 16, "fwd", "rev")
+    direction = if_else(direction == 16, "fwd", "rev")
   )
 
 ###############################################################################
