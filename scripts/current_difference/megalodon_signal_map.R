@@ -41,31 +41,37 @@ rolling_mean <- function(x, n = 2, weight_dropoff = 0.75){
   max_i <- length(x)
   weigths <- lapply(1:n, function(x) weight_dropoff^x) %>% unlist()
   weigths <- c(weigths[length(weigths):1], 1, weigths)
-  out <- pblapply(
+  out <- lapply(
       seq_along(x),
       function(i){
-        values <- x[max(1,i-n):min(max_i, i+n)]
+        values <- as.numeric(x[max(1,i-n):min(max_i, i+n)])
         weigths_indexed <- weigths[max(1, n - i + 2):min(n*2 + 1, n + 1 + max_i - i)]
         weigths_indexed <- weigths_indexed/sum(weigths_indexed)
-        out <- sum(values * weigths_indexed, na.rm = TRUE)
+        weigths_indexed <- as.numeric(weigths_indexed)
+        sum(values * weigths_indexed, na.rm = TRUE)
       }
     ) %>%  unlist()
-  out <- 10 ^ out
   return(out)  
 }
 
 # Calculate rolling mean in log space with distance weigth decay
 rolling_mean_log <- function(x, n = 2, weight_dropoff = 0.75, base = 10){
   max_i <- length(x)
+  print(sum(x, na.rm = TRUE))
   weigths <- lapply(1:n, function(x) weight_dropoff^x) %>% unlist()
   weigths <- c(weigths[length(weigths):1], 1, weigths)
   out <- pblapply(
     seq_along(x),
     function(i){
-      values <- log(x[max(1,i-n):min(max_i, i+n)], base = base)
-      weigths_indexed <- weigths[max(1, n - i + 2):min(n*2 + 1, n + 1 + max_i - i)]
-      weigths_indexed <- weigths_indexed/sum(weigths_indexed)
-      out <- 10 ^ sum(values * weigths_indexed, na.rm = TRUE)
+      if (is.na(x[i])) {
+        return(NA)
+      } else {
+        values <- log(x[max(1,i-n):min(max_i, i+n)], base = base)
+        weigths_indexed <- weigths[max(1, n - i + 2):min(n*2 + 1, n + 1 + max_i - i)]
+        weigths_indexed <- weigths_indexed/sum(weigths_indexed)
+        10 ^ sum(values * weigths_indexed, na.rm = TRUE)
+      }
+      
     }
   ) %>%  unlist()
   return(out)  
@@ -82,7 +88,7 @@ arg$signal_mapping_nat <- "/shared-nfs/SH/samples/zymo/megalodon/nat/signal_mapp
 arg$read_mapping_pcr <- "/shared-nfs/SH/samples/zymo/megalodon/pcr_test/mappings.sort.view.txt"
 arg$read_mapping_nat <- "/shared-nfs/SH/samples/zymo/megalodon/nat/mappings.sort.view.txt"
 arg$out <- "/shared-nfs/SH/samples/zymo/current_difference/weighting_test"
-arg$contig_plot <- c("bs_contig1", "lf_contig1", "ef_contig1", "sa_contig1")
+arg$contig_plot <- c("lf_contig1")
 arg$overwrite <- TRUE
 arg$save_intermediate_files <- FALSE
 arg$min_u_val <- 1e-12
@@ -244,14 +250,24 @@ calculate_current_diff <- function(
       dt2, on = "contig_id", nat := i.nat
     ][
       , mean_nat := pblapply(
-          nat,
-          function(x){mean(x$dacs_norm, na_rm = TRUE)},
+          nat,          
+          function(x){
+            if (is.null(x)) {
+              NA
+            } else {
+              mean(x$dacs_norm, na_rm = TRUE)}
+          },
           cl = ifelse(parallel, arg$threads, NULL)) %>% 
         unlist()
     ][
       , mean_pcr := pblapply(
           pcr, 
-          function(x){mean(x$dacs_norm, na_rm = TRUE)},
+          function(x){
+            if (is.null(x)) {
+              NA
+            } else {
+              mean(x$dacs_norm, na_rm = TRUE)}
+            },
           cl = ifelse(parallel, arg$threads, NULL)) %>% 
         unlist()
     ][
@@ -296,7 +312,7 @@ calculate_current_diff <- function(
   log_info("Wilcox test")
   dt1[
       , u_val := mcmapply(
-        FUN = function(nat, pcr, n_nat_map, n_pcr_map){
+        function(nat, pcr, n_nat_map, n_pcr_map){
             if(n_nat_map >= min_cov & n_pcr_map >= min_cov) {
               wilcox.test(nat$dacs_norm, pcr$dacs_norm)$p.value
             } else {
@@ -307,8 +323,8 @@ calculate_current_diff <- function(
         pcr,
         n_nat_map,
         n_pcr_map,
-        cl = arg$threads
-      )
+        mc.cores = arg$threads
+      ) %>% unlist()
     ]
   log_info("Weighting p-values")
   dt1[
@@ -577,7 +593,7 @@ if (!file.access(glue("{arg$out}/current_difference.tsv"), mode = 4) == 0 | arg$
 
 p_all <- plot_events(current_difference)
 
-ggsave(
+p_allggsave(
   width = unit(8, "cm"),
   height = unit(10, "cm"),
   p_all, 
@@ -622,23 +638,73 @@ ggsave(
 # pcr vs. pcr and nat vs. pcr plot function
 plot_PvP_NvP <- function(thresholds, col){
   thresholds %>% 
+    lapply(
+      function(x){
+        n_NvP <- sum(current_difference[, ..col] < x, na.rm = TRUE)
+        p_NvP <- n_NvP / nrow(na.omit(current_difference[, ..col]))
+        n_PvP <- sum(current_difference_pcr[, ..col] < x, na.rm = TRUE)
+        p_PvP <- n_PvP / nrow(na.omit(current_difference_pcr[, ..col]))
+        list(
+          x,
+          p_NvP, 
+          p_PvP,
+          p_NvP - p_PvP
+        )
+      }) %>% 
+    rbindlist() %>% 
+    setnames(paste0("V", 1:4), c("U_val", "p_NvP",  "p_PvP", "p_diff")) %>%  
+    tidyr::pivot_longer(starts_with("p_"), values_to = "proportion", names_to = "type") %>% 
+    ggplot() +
+    aes(x = U_val, y = proportion, fill = type) +
+    geom_line() +
+    geom_point(shape = 21, size = 1.5) +
+    scale_x_log10() +
+    scale_y_continuous(labels = percent) +
+    labs(
+      x = "P-value threshold",
+      y = "Proportion of events"
+    ) +
+    theme_bw()
+}
+
+# p-value
+p2.1 <-  10^-seq(-1, 20, by = 0.2) %>% 
+  plot_PvP_NvP(col = "u_val") +
+  labs(title = "P-value")
+
+# p-value weighted
+p2.2 <-  10^-seq(1, 20, by = 0.2) %>% 
+  plot_PvP_NvP(col = "u_val_weighted") +
+  labs(title = "P-value weighted")
+
+# p-value log weighted 
+p2.3 <-  10^-seq(1, 20, by = 0.2) %>% 
+  plot_PvP_NvP(col = "u_val_weighted_log") +
+  labs(title = "P-value log weighted")
+  
+# Mean difference cutoff
+p2.4 <- 10^-seq(-1, 3, by = 0.1) %>% 
+  plot_PvP_NvP("mean_dif") +
+  xlab("Mean difference threshold") +
+  labs(title = "Mean difference")
+
+p2.5 <- 10^-seq(-1, 10, by = 0.1) %>% 
   lapply(
     function(x){
       n_NvP <- sum(current_difference[, ..col] < x, na.rm = TRUE)
+      p_NvP <- n_NvP / nrow(na.omit(current_difference[, ..col]))
       n_PvP <- sum(current_difference_pcr[, ..col] < x, na.rm = TRUE)
+      p_PvP <- n_PvP / nrow(na.omit(current_difference_pcr[, ..col]))
       list(
         x,
-        n_NvP,
-        n_NvP / nrow(na.omit(current_difference[, ..col])), 
-        n_PvP, 
-        n_PvP / nrow(na.omit(current_difference_pcr[, ..col]))
+        p_NvP, 
+        p_PvP,
+        p_NvP - p_PvP
       )
     }) %>% 
   rbindlist() %>% 
-  setnames(paste0("V", 1:5), c("U_val", "n_NvP", "p_NvP", "n_PvP", "p_PvP")) %>%  
+  setnames(paste0("V", 1:4), c("U_val", "p_NvP",  "p_PvP", "p_diff")) %>%  
   tidyr::pivot_longer(starts_with("p_"), values_to = "proportion", names_to = "type") %>% 
-  tidyr::pivot_longer(starts_with("n_"), values_to = "count", names_to = "type2") %>% 
-  filter(substr(type, 2, 4) == substr(type2, 2, 4)) %>%  
   ggplot() +
   aes(x = U_val, y = proportion, fill = type) +
   geom_line() +
@@ -650,32 +716,9 @@ plot_PvP_NvP <- function(thresholds, col){
     y = "Proportion of events"
   ) +
   theme_bw()
-}
 
-# p-value
-p2.1 <-  10^-seq(-1, 20, by = 0.5) %>% 
-  plot_PvP_NvP(col = "u_val") +
-  labs(title = "P-value")
-
-# p-value weighted
-p2.2 <-  10^-seq(1, 20, by = 0.5) %>% 
-  plot_PvP_NvP(col = "u_val_weighted") +
-  labs(title = glue("P-value weighted, dropoff = {arg$dropoff}"))
-
-# p-value log weighted 
-p2.3 <-  10^-seq(1, 20, by = 0.5) %>% 
-  plot_PvP_NvP(col = "u_val_weighted_log") +
-  labs(title = glue("P-value log weighted, dropoff = {arg$dropoff}"))
-  
-# Mean difference cutoff
-p2.4 <- 10^-seq(-1, 8, by = 0.5) %>% 
-  plot_PvP_NvP("mean_dif") +
-  xlab("Mean difference threshold") +
-  labs(title = "Mean difference")
-
-
-p2.1 + p2.2 /
-p2.3 + p2.4
+(p2.1 + p2.2) /
+(p2.3 + p2.4) +
 plot_layout(guides = "collect") +
   plot_annotation(
     title =  "Estimation of event cut-off"
