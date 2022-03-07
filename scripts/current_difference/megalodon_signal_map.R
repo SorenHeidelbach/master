@@ -13,7 +13,8 @@ pacman::p_load(
   "patchwork",
   "logger",
   "glue",
-  "pbapply"
+  "pbapply",
+  "scales"
 )
 
 ###############################################################################
@@ -36,8 +37,13 @@ unnest_dt <- function(dt, col, id){
   dt[, eval(col), by = eval(by)]
 }
 
+set_sum_1 <- function(x){
+  x/sum(x)
+}
+
 # Calculate rolling mean with distance weigth decay
 rolling_mean <- function(x, n = 2, weight_dropoff = 0.75){
+  stopifnot(is.numeric(x))
   max_i <- length(x)
   weigths <- lapply(1:n, function(x) weight_dropoff^x) %>% unlist()
   weigths <- c(weigths[length(weigths):1], 1, weigths)
@@ -45,36 +51,66 @@ rolling_mean <- function(x, n = 2, weight_dropoff = 0.75){
       seq_along(x),
       function(i){
         values <- as.numeric(x[max(1,i-n):min(max_i, i+n)])
-        weigths_indexed <- weigths[max(1, n - i + 2):min(n*2 + 1, n + 1 + max_i - i)]
-        weigths_indexed <- weigths_indexed/sum(weigths_indexed)
-        weigths_indexed <- as.numeric(weigths_indexed)
-        sum(values * weigths_indexed, na.rm = TRUE)
+        weigths[max(1, n - i + 2):min(n*2 + 1, n + 1 + max_i - i)] %>% 
+          set_sum_1() %>%  
+        sum(values * ., na.rm = TRUE)
       }
     ) %>%  unlist()
   return(out)  
 }
 
 # Calculate rolling mean in log space with distance weigth decay
-rolling_mean_log <- function(x, n = 2, weight_dropoff = 0.75, base = 10){
-  max_i <- length(x)
-  print(sum(x, na.rm = TRUE))
-  weigths <- lapply(1:n, function(x) weight_dropoff^x) %>% unlist()
-  weigths <- c(weigths[length(weigths):1], 1, weigths)
-  out <- pblapply(
-    seq_along(x),
-    function(i){
-      if (is.na(x[i])) {
-        return(NA)
-      } else {
-        values <- log(x[max(1,i-n):min(max_i, i+n)], base = base)
-        weigths_indexed <- weigths[max(1, n - i + 2):min(n*2 + 1, n + 1 + max_i - i)]
-        weigths_indexed <- weigths_indexed/sum(weigths_indexed)
-        10 ^ sum(values * weigths_indexed, na.rm = TRUE)
-      }
-      
+rolling_mean_log <- function(x, contig_index, n = 2, weight_dropoff = 0.75, base = 10, data_splits = 25){
+  stopifnot(is.numeric(x))
+  stopifnot(is.numeric(contig_index))
+  warningCondition(length(x) < 1, message = "Input vector of size 0?")
+  warningCondition(length(contig_index) < 1, message = "Index vector of size 0?")
+  warningCondition(is.na(contig_index) %>%  any(), message = "There are NA values in the contig index")
+
+  dir.create(paste0(arg$out, "/temp"), showWarnings = FALSE)
+  if(length(na.omit(x)) != 0) {
+    log_info(glue("length of x: {length(x)}"))
+    log_info(glue("length of x, no NA: {length(na.omit(x))}"))
+    log_info(glue("Percent NA: {1 - (length(na.omit(x)) / length(x))}"))
+    log_info(glue("Mean P-values: {mean(x, na.rm = TRUE)}"))
+    pboptions(nout = data_splits)
+    split_ind <- c(rep(1:data_splits, each = floor(length(x)/data_splits)), 
+      rep(data_splits, length(x) %% data_splits))
+    x_batches <- split(x, split_ind)
+    pos_batches <- split(contig_index, split_ind)
+    for (i in 1:data_splits) {
+      chunk_x <- x_batches[[i]]
+      save(chunk_x, file = paste0(arg$out, "/temp/x_bacth_", i, ".Rdata"))
+      chunk_pos <- pos_batches[[i]]
+      save(chunk_pos, file = paste0(arg$out, "/temp/pos_bacth_", i, ".Rdata"))
     }
-  ) %>%  unlist()
-  return(out)  
+    max_ind <- max(contig_index)
+    weigths <- lapply(1:n, function(x) weight_dropoff^x) %>% unlist()
+    weigths <- c(weigths[length(weigths):1], 1, weigths)
+    out <- pblapply(
+      1:data_splits,
+      function(i) {
+        load(file = paste0(arg$out, "/temp/x_bacth_", i, ".Rdata"))
+        load(file = paste0(arg$out, "/temp/pos_bacth_", i, ".Rdata"))
+        lapply(
+          chunk_pos,
+          function(pos){
+            ind <- max(1, pos - n):min(max_ind, pos + n)
+            weigths[chunk_pos[(chunk_pos %in% ind)] - pos + n + 1] %>% 
+              set_sum_1() %>%  
+              sum(log(chunk_x[chunk_pos %in% ind], base = base) * ., na.rm = TRUE) %>% 
+              `^`(10, .)
+          }
+        )
+      },
+      cl = arg$threads
+    ) %>%  unlist()
+    log_info(glue("Mean weighted P-values: {mean(out)}"))
+    return(out)
+  } else {
+    log_info("All values in vector are NA")
+    return(rep(NA, length(x)))
+  }
 }
 
 ###############################################################################
@@ -87,13 +123,13 @@ arg$signal_mapping_pcr <- "/shared-nfs/SH/samples/zymo/megalodon/pcr_test/signal
 arg$signal_mapping_nat <- "/shared-nfs/SH/samples/zymo/megalodon/nat/signal_mappings.hdf5"
 arg$read_mapping_pcr <- "/shared-nfs/SH/samples/zymo/megalodon/pcr_test/mappings.sort.view.txt"
 arg$read_mapping_nat <- "/shared-nfs/SH/samples/zymo/megalodon/nat/mappings.sort.view.txt"
-arg$out <- "/shared-nfs/SH/samples/zymo/current_difference/weighting_test"
-arg$contig_plot <- c("lf_contig1")
-arg$overwrite <- TRUE
+arg$out <- "/shared-nfs/SH/samples/zymo/current_difference/two_contigs"
+arg$contig_plot <- c("bs_contig1", "lf_contig1")
+arg$overwrite <- FALSE
 arg$save_intermediate_files <- FALSE
 arg$min_u_val <- 1e-12
-arg$u_val_weight_window <- 2 # val*2 + 1
-arg$u_val_weight_dropoff <- 1
+arg$u_val_weight_window <- 3 # val*2 + 1
+arg$u_val_weight_dropoff <- 0.9
 arg$min_mappings <- 3
 arg$threads <- 20
 
@@ -109,9 +145,6 @@ jsonlite::write_json(arg, path = glue("{arg$out}/args.json"), pretty = TRUE)
 ##                                                                           ##
 ##                                                                           ##
 ###############################################################################
-
-# Load in reference
-ref <- read.fasta(arg$reference)
 
 load_mapping_hdf5 <- function(hdf5_file, 
                               batch,
@@ -328,13 +361,15 @@ calculate_current_diff <- function(
     ]
   log_info("Weighting p-values")
   dt1[
-      , u_val_weighted := rolling_mean(u_val, n = arg$u_val_weight_window, weight_dropoff = arg$u_val_weight_dropoff)
+      , u_val_weighted_log := rolling_mean_log(u_val, contig_index = contig_index, n = arg$u_val_weight_window, weight_dropoff = arg$u_val_weight_dropoff), by = contig
     ][
-      , u_val_weighted_log := rolling_mean_log(u_val, n = arg$u_val_weight_window, weight_dropoff = arg$u_val_weight_dropoff)
+      , u_val_bonf := p.adjust(u_val, n = length(u_val), method = "bonferroni")
     ][
-      , event := u_val < min_u_val
+      , u_val_bonf_weighted_log := rolling_mean_log(u_val_bonf, contig_index = contig_index, n = arg$u_val_weight_window, weight_dropoff = arg$u_val_weight_dropoff), by = contig
     ][
-      , event_weighted := u_val_weighted_log < min_u_val*1e3
+      , u_val_BH := p.adjust(u_val, n = length(u_val), method = "BH")
+    ][
+      , u_val_BH_weighted_log := rolling_mean_log(u_val_BH, contig_index = contig_index, n = arg$u_val_weight_window, weight_dropoff = arg$u_val_weight_dropoff), by = contig
     ]
 }
 
@@ -342,7 +377,7 @@ calculate_current_diff <- function(
 # Visualisation of events in one contig
 ###############################################################################
 # Plots 
-
+pboptions(type = "timer")
 plot_events <- function(dt){
   guides_format <- guides(
       fill = guide_legend(title = "Event"),
@@ -355,25 +390,24 @@ plot_events <- function(dt){
   
   
   p1.1 <- dt %>% 
-    filter(!is.na(event_weighted)) %>% 
     ggplot(aes(x = contig_index, y = mean_dif)) +
     geom_hline(yintercept = 0) +
     geom_segment(aes(x = contig_index, xend = contig_index, yend = mean_dif), y = 0, size = 0.2) +
-    geom_point(aes(fill = event_weighted,  size = event_weighted), shape = 21) +
+    geom_point(shape = 21) +
     labs(
       x = "Contig Position",
       y = "NAT vs. PCR (Mean difference)"
     )  + 
     scale_size_manual(values = c(0.4, 2)) +
     scale_fill_manual(values = plot_col) +
-    guides_format
+    guides_format +
+    ggtitle("mean_diff")
   
   p1.2 <- dt %>% 
-    filter(!is.na(event_weighted)) %>% 
     ggplot(aes(x = contig_index, y = u_val_weighted_log)) +
     geom_hline(yintercept = 1) +
     geom_segment(aes(x = contig_index, xend = contig_index, yend = u_val_weighted_log), y = 0, size = 0.2) +
-    geom_point(aes(fill = event_weighted, size = event_weighted), shape = 21) +
+    geom_point(shape = 21) +
     labs(
       x = "Contig Position",
       y = "NAT vs. PCR (U-value)"
@@ -381,12 +415,12 @@ plot_events <- function(dt){
     scale_size_manual(values = c(0.4, 2)) +
     scale_y_log10() +
     scale_fill_manual(values = plot_col) +
-    guides_format 
+    guides_format +
+    ggtitle("p_val")
     
   
-  p1.3 <- dt %>% 
-    filter(!is.na(event_weighted)) %>% 
-    ggplot(aes(x = n_pcr, y = n_nat, col = event_weighted, fill = event_weighted)) +
+  p1.3 <- dt %>%  
+    ggplot(aes(x = n_pcr, y = n_nat)) +
     #geom_point_default +
     labs(
       x = "PCR dacs",
@@ -403,11 +437,11 @@ plot_events <- function(dt){
     scale_alpha_discrete(range = c(0,1)) +
     scale_fill_manual(values = plot_col) +
     scale_color_manual(values = plot_col) +
-    guides_format
+    guides_format +
+    ggtitle("dacs")
   
   p1.4 <- dt %>% 
-    filter(!is.na(event_weighted)) %>% 
-    ggplot(aes(x = n_pcr_map, y = n_nat_map, col = event, fill = event_weighted)) +
+    ggplot(aes(x = n_pcr_map, y = n_nat_map, col = event)) +
     labs(
       x = "PCR coverage",
       y = "NAT coverage"
@@ -421,14 +455,14 @@ plot_events <- function(dt){
     scale_alpha_discrete(range = c(0,1)) +
     scale_color_manual(values = plot_col) +
     scale_fill_manual(values = plot_col) +
-    guides_format
+    guides_format +
+    ggtitle("coverage")
   
   p1.5 <- dt %>% 
-    filter(!is.na(event_weighted)) %>% 
     mutate(
       mappings = n_pcr_map / n_nat_map
     ) %>% 
-    ggplot(aes(y = mappings, x = u_val_weighted_log, col = event_weighted)) +
+    ggplot(aes(y = mappings, x = u_val_weighted_log)) +
     labs(
       x = "U-value",
       y = "nr. PCR / nr. NAT"
@@ -437,11 +471,11 @@ plot_events <- function(dt){
     scale_x_log10() +
     scale_y_log10() +
     scale_color_manual(values = plot_col) +
-    guides_format
+    guides_format +
+    ggtitle("cov_proportion")
   
   p1.6 <- dt %>% 
-    filter(!is.na(event_weighted)) %>% 
-    ggplot(aes(x = mean_dif, y = u_val_weighted_log, col = event_weighted)) +
+    ggplot(aes(x = mean_dif, y = u_val_weighted_log)) +
     labs(
       x = "Mean difference",
       y = "U-value"
@@ -449,7 +483,8 @@ plot_events <- function(dt){
     geom_point_default +
     scale_y_log10() +
     scale_color_manual(values = plot_col) +
-    guides_format
+    guides_format +
+    ggtitle("fake_vulcano_plot")
 
   return(list(p1.1, p1.2, p1.3, p1.4, p1.5, p1.6))
 }
@@ -481,7 +516,7 @@ mapping_nat <- fread(arg$read_mapping_nat) %>%
 # PCR reads
 ###############################################################################
 
-if (!file.access(glue("{arg$out}/singal_mappings_pcr.tsv"), mode = 4) == 0 | arg$overwrite) {
+if (TRUE) {
   # Loading signal mappings
   log_info("Processing PCR mappings")
   hdf5_pcr <- H5Fopen(arg$signal_mapping_pcr)
@@ -513,18 +548,13 @@ if (!file.access(glue("{arg$out}/singal_mappings_pcr.tsv"), mode = 4) == 0 | arg
     group_nest_dt(contig_id, contig_index, contig, direction, .key = "pcr")
   log_success("Succesfully processed PCR dacs")
 
-} else {
-  log_info("Loading PCR dacs from previous run")
-  signal_mappings_pcr <- fread(glue("{arg$out}/singal_mappings_pcr.tsv")) %>% 
-    group_nest_dt(contig_id, contig_index, contig, direction, .key = "pcr")
-  log_success("Loaded PCR dacs")
-}
+} 
 
 ###############################################################################
 # NAT reads
 ###############################################################################
 
-if (!file.access(glue("{arg$out}/singal_mappings_nat.tsv"), mode = 4) == 0 | arg$overwrite) {
+if (TRUE) {
   log_info("Processing NAT signal mappings")
   hdf5_nat <- H5Fopen(arg$signal_mapping_nat)
   signal_mappings_nat_unnested <- h5ls(hdf5_nat) %>% filter(group == "/Batches") %>% pull(name) %>% 
@@ -538,7 +568,7 @@ if (!file.access(glue("{arg$out}/singal_mappings_nat.tsv"), mode = 4) == 0 | arg
           batch = batch,
           mappings = mapping_nat, 
           type = "nat",
-          reads_ids = mapping_nat[contig %in% arg$contig_plot,][, read_id][1:3415]
+          reads_ids = mapping_nat[contig %in% arg$contig_plot,][, read_id]
         )
       }
     ) %>% 
@@ -555,11 +585,6 @@ if (!file.access(glue("{arg$out}/singal_mappings_nat.tsv"), mode = 4) == 0 | arg
     group_nest_dt(contig_id, contig_index, contig, direction, .key = "nat")
   log_success("Succesfully processed NAT dacs")
   
-} else {
-  log_info("Loading NAT dacs from previous run")
-  signal_mappings_nat <- fread(glue("{arg$out}/singal_mappings_nat.tsv")) %>% 
-    group_nest_dt(contig_id, contig_index, contig, direction, .key = "nat")
-  log_success("Loaded NAT dacs")
 }
 
 ###############################################################################
@@ -591,25 +616,27 @@ if (!file.access(glue("{arg$out}/current_difference.tsv"), mode = 4) == 0 | arg$
 # Plot
 ###############################################################################
 
-p_all <- plot_events(current_difference)
+# p_all <- plot_events(current_difference)
+# 
+# p_all %>% 
+# pblapply(
+#   function(p){
+#       ggsave(
+#         width = unit(8, "cm"),
+#         height = unit(10, "cm"),
+#         p, 
+#         filename = glue("{arg$out}/current_difference_{p$labels$title}.png"), 
+#         device = "png"
+#       )
+#     }
+#   )
 
-p_allggsave(
-  width = unit(8, "cm"),
-  height = unit(10, "cm"),
-  p_all, 
-  filename = glue("{arg$out}/current_difference_{arg$contig_plot}.png"), 
-  device = "png"
-)
-
-# plot_events(current_difference[contig_index %in% 7.15e4:7.25e4, ][
-#   n_nat_map > 5 & n_pcr_map > 5
-#   ])
 
 ###############################################################################
 # Evaluation of PCR batch 1 vs batch 0
 ###############################################################################
 
-signal_mappings_pcr_0 <- signal_mappings_pcr_unnested[batch == "Batch_0", ]%>% 
+signal_mappings_pcr_0 <- signal_mappings_pcr_unnested[batch == "Batch_0", ] %>% 
   group_nest_dt(contig_id, contig_index, contig, .key = "pcr")
 
 signal_mappings_pcr_1 <- signal_mappings_pcr_unnested[batch == "Batch_1", ] %>% 
@@ -619,17 +646,17 @@ current_difference_pcr <- copy(signal_mappings_pcr_0)
 calculate_current_diff(current_difference_pcr, signal_mappings_pcr_1, arg$min_u_val)
 
 
-plot_events(signal_mappings_pcr_0[
-  n_nat_map > 1 & n_pcr_map > 1
-])
+# plot_events(signal_mappings_pcr_0[
+#   n_nat_map > 1 & n_pcr_map > 1
+# ])
 
-ggsave(
-  width = unit(8, "cm"),
-  height = unit(10, "cm"),
-  p_pcr_vs_pcr, 
-  filename = glue("{arg$out}/current_difference_pcr_vs_pcr_{arg$contig_plot}.png"), 
-  device = "png"
-)
+# ggsave(
+#   width = unit(8, "cm"),
+#   height = unit(10, "cm"),
+#   p_pcr_vs_pcr, 
+#   filename = glue("{arg$out}/current_difference_pcr_vs_pcr_{arg$contig_plot}.png"), 
+#   device = "png"
+# )
 
 ###############################################################################
 # Evaluation of differenct U-value cut offs
@@ -640,47 +667,48 @@ plot_PvP_NvP <- function(thresholds, col){
   thresholds %>% 
     lapply(
       function(x){
-        n_NvP <- sum(current_difference[, ..col] < x, na.rm = TRUE)
+        n_NvP <- sum(abs(current_difference[, ..col]) < x, na.rm = TRUE)
         p_NvP <- n_NvP / nrow(na.omit(current_difference[, ..col]))
-        n_PvP <- sum(current_difference_pcr[, ..col] < x, na.rm = TRUE)
+        n_PvP <- sum(abs(current_difference_pcr[, ..col]) < x, na.rm = TRUE)
         p_PvP <- n_PvP / nrow(na.omit(current_difference_pcr[, ..col]))
         list(
           x,
           p_NvP, 
           p_PvP,
-          p_NvP - p_PvP
+          p_NvP - p_PvP,
+          p_PvP/p_NvP
         )
       }) %>% 
     rbindlist() %>% 
-    setnames(paste0("V", 1:4), c("U_val", "p_NvP",  "p_PvP", "p_diff")) %>%  
+    setnames(paste0("V", 1:5), c("U_val", "p_NvP",  "p_PvP", "p_diff", "p_ratio")) %>%  
     tidyr::pivot_longer(starts_with("p_"), values_to = "proportion", names_to = "type") %>% 
     ggplot() +
-    aes(x = U_val, y = proportion, fill = type) +
-    geom_line() +
-    geom_point(shape = 21, size = 1.5) +
+    aes(x = U_val, y = proportion, col = type) +
+    geom_line(size = 1.2) +
+    #geom_point(shape = 21, size = 1.5) +
     scale_x_log10() +
     scale_y_continuous(labels = percent) +
     labs(
       x = "P-value threshold",
       y = "Proportion of events"
     ) +
-    theme_bw()
+    theme_bw() +
+    scale_color_manual(values = c("#127474", "#741212", "#437412", "#431274"))
 }
-
+ylimits <- c(1e-5, 1)
+ybreaks <- 10 ^ seq(log(ylimits[2], base = 10), log(ylimits[1], base = 10), by = -1)
+ylabel <- paste0(signif(ybreaks*100, 1), "%")
 # p-value
-p2.1 <-  10^-seq(-1, 20, by = 0.2) %>% 
+p2.1 <-  10^-seq(0, 20, by = 0.2) %>% 
   plot_PvP_NvP(col = "u_val") +
-  labs(title = "P-value")
-
-# p-value weighted
-p2.2 <-  10^-seq(1, 20, by = 0.2) %>% 
-  plot_PvP_NvP(col = "u_val_weighted") +
-  labs(title = "P-value weighted")
+  labs(title = "P-value") +
+  scale_y_log10(breaks = ybreaks, limits = ylimits, label = ylabel)
 
 # p-value log weighted 
 p2.3 <-  10^-seq(1, 20, by = 0.2) %>% 
   plot_PvP_NvP(col = "u_val_weighted_log") +
-  labs(title = "P-value log weighted")
+  labs(title = "P-value log weighted") +
+  scale_y_log10(breaks = ybreaks, limits = ylimits, label = ylabel)
   
 # Mean difference cutoff
 p2.4 <- 10^-seq(-1, 3, by = 0.1) %>% 
@@ -688,43 +716,35 @@ p2.4 <- 10^-seq(-1, 3, by = 0.1) %>%
   xlab("Mean difference threshold") +
   labs(title = "Mean difference")
 
-p2.5 <- 10^-seq(-1, 10, by = 0.1) %>% 
-  lapply(
-    function(x){
-      n_NvP <- sum(current_difference[, ..col] < x, na.rm = TRUE)
-      p_NvP <- n_NvP / nrow(na.omit(current_difference[, ..col]))
-      n_PvP <- sum(current_difference_pcr[, ..col] < x, na.rm = TRUE)
-      p_PvP <- n_PvP / nrow(na.omit(current_difference_pcr[, ..col]))
-      list(
-        x,
-        p_NvP, 
-        p_PvP,
-        p_NvP - p_PvP
-      )
-    }) %>% 
-  rbindlist() %>% 
-  setnames(paste0("V", 1:4), c("U_val", "p_NvP",  "p_PvP", "p_diff")) %>%  
-  tidyr::pivot_longer(starts_with("p_"), values_to = "proportion", names_to = "type") %>% 
-  ggplot() +
-  aes(x = U_val, y = proportion, fill = type) +
-  geom_line() +
-  geom_point(shape = 21, size = 1.5) +
-  scale_x_log10() +
-  scale_y_log10(labels = percent) +
-  labs(
-    x = "P-value threshold",
-    y = "Proportion of events"
-  ) +
-  theme_bw()
+p2.5 <- 10^-seq(0, 20, by = 0.1) %>% 
+  plot_PvP_NvP("u_val_BH") +
+  labs(title = "P-value B&H corrected") +
+  scale_y_log10(breaks = ybreaks, limits = ylimits, label = ylabel)
 
-(p2.1 + p2.2) /
-(p2.3 + p2.4) +
+p2.6 <- 10^-seq(0, 20, by = 0.1) %>% 
+  plot_PvP_NvP("u_val_BH_weighted_log") +
+  labs(title = "P-value B&H corrected and log weighted") +
+  scale_y_log10(breaks = ybreaks, limits = ylimits, label = ylabel)
+
+p2.7 <- 10^-seq(0, 20, by = 0.1) %>% 
+  plot_PvP_NvP("u_val_bonf") +
+  labs(title = "P-value Bonferroni") +
+  scale_y_log10(breaks = ybreaks, limits = ylimits, label = ylabel)
+
+
+p2_all <- (p2.1 + p2.5 + p2.7) /
+(p2.3 + p2.6 + p2.4) +
 plot_layout(guides = "collect") +
   plot_annotation(
     title =  "Estimation of event cut-off"
   ) & 
   theme_bw()
-  
+ggsave(
+  width = unit(16, "cm"),
+  height = unit(7, "cm"),
+  filename = glue("{arg$out}/event_cutoff_estimation.png"),
+  p2_all,
+  device = "png")
 
 
 
