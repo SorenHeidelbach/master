@@ -1,7 +1,20 @@
 
 
-# Turn bam file into mappings summary
-file=mappings
+# Mapping for coverage
+ref="zymoHMW_references.fasta"
+fastq="PCR/basecalls_trim_filt.fastq"
+file="PCR/trim_filt_ref"
+module load Minimap2/2.17-foss-2020b
 module load SAMtools/1.14-GCC-10.2.0
-samtools sort $file.bam |
-    samtools view > $file.sort.view.txt
+minimap2 -a $ref $fastq --secondary=no -x map-ont -t 50 |
+    samtools sort -o $file.bam
+module purge 
+
+# Turn bam file into mappings summary
+file="PCR/trim_filt_ref"
+module load SAMtools/1.14-GCC-10.2.0
+samtools view "$file.sort.bam" > "$file.sort.view.txt"
+samtools depth -a "$file.sort.bam" > "$file.depth"
+module purge
+
+
