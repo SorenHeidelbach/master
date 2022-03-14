@@ -1,6 +1,4 @@
 #!/usr/bin/Rscript
-.libPaths( c( "/shared-nfs/SH/software/Rlib" , .libPaths()))
-
 setwd(here::here())
 pacman::p_load(
   "data.table",
