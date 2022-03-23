@@ -7,7 +7,6 @@ pacman::p_load(
   "argparse",
   "seqinr"
 )
-
 ###############################################################################
 # Arguments
 ###############################################################################
@@ -15,7 +14,7 @@ pacman::p_load(
 
 arg <- list()
 # File generated from 'SAMtools depth -a' 
-arg$cov_file <- "/shared-nfs/SH/samples/zymoHMW/megalodon/pcr_2022-02-28_zymoHMW_Z2_run2_100ng/mappings.depth"
+arg$cov_file <- "/scratch/users/sheide17/samples/zymoHMW/PCR/trim_filt_ref.depth"
 arg$reference <- "/shared-nfs/SH/samples/zymoHMW/zymoHMW_references.fasta"
 arg$out <- "/shared-nfs/SH/samples/zymoHMW/pcr"
 
@@ -33,7 +32,7 @@ reference <- read.fasta(arg$reference) %>%
   setnames(c("ref", "size", "GC"))
 
 
-n = 50
+n = 500
 
 coverage <- fread(arg$cov_file) %>% 
   setnames(c("ref", "pos", "cov"))
@@ -68,6 +67,7 @@ coverage_binned <- coverage[
     ][
       , GC := mean(unique(GC)), by = ref
     ]
+
 
 coverage_binned %>% 
   mutate(cov_bin = ifelse(cov_bin == 0, cov_bin + 0.5, cov_bin)) %>% 
@@ -121,7 +121,7 @@ ggsave(
     filter(!grepl("tig000", ref)) %>% 
     ggplot(aes(x = ref, y = proportion)) +
     geom_histogram(stat = "identity") +
-    theme_minimal() +
+    theme_bw() +
     theme(axis.text.x.bottom = element_text(angle = 90, hjust = 1)) +
     geom_text(aes(label = paste0(signif(bases/1e6, 3), "Mb")), nudge_y = 0.005) +
     labs(
@@ -129,4 +129,15 @@ ggsave(
       y = "Proportion of bases mapped to reference"
     )
 )
+
+coverage_binned %>% 
+  ggplot() +
+  aes(x = bin*n, y = cov_bin) +
+  geom_line() +
+  facet_wrap(~ref, scales = "free") +
+  theme_bw() +
+  labs(x = "Contig position", y = "Bin coverage", title = paste0("Reference coverage, bin size ", n)) +
+  geom_smooth(col = "red3")
+
+
 
