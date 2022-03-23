@@ -11,10 +11,11 @@ minimap2 -a $ref $fastq --secondary=no -x map-ont -t 50 |
 module purge 
 
 # Turn bam file into mappings summary
-file="PCR/trim_filt_ref"
+bam="/shared-nfs/SH/samples/zymoHMW/PCR/trim_filt_ref.bam"
+file="trim_filt_ref"
 module load SAMtools/1.14-GCC-10.2.0
-samtools view "$file.sort.bam" > "$file.sort.view.txt"
-samtools depth -a "$file.sort.bam" > "$file.depth"
+# samtools view "$bam" > "$file.view.txt"
+samtools depth --threads 20 -a "$bam" > "$file.depth"
 module purge
 
 

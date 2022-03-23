@@ -1,4 +1,6 @@
 #!/usr/bin/Rscript
+.libPaths( c( "/shared-nfs/SH/software/Rlib" , .libPaths()))
+
 setwd(here::here())
 pacman::p_load(
   "data.table",
@@ -12,7 +14,8 @@ pacman::p_load(
   "logger",
   "glue",
   "pbapply",
-  "scales"
+  "scales",
+  "gganimate"
 )
 
 ###############################################################################
@@ -73,7 +76,7 @@ rolling_mean_log <- function(x, contig_index, n = 2, weight_dropoff = 0.75, base
     log_info(glue("Mean P-values: {mean(x, na.rm = TRUE)}"))
     pboptions(nout = data_splits)
     split_ind <- c(rep(1:data_splits, each = floor(length(x)/data_splits)), 
-      rep(data_splits, length(x) %% data_splits))
+                   rep(data_splits, length(x) %% data_splits))
     x_batches <- split(x, split_ind)
     pos_batches <- split(contig_index, split_ind)
     for (i in 1:data_splits) {
@@ -611,23 +614,86 @@ if (!file.access(glue("{arg$out}/current_difference.tsv"), mode = 4) == 0 | arg$
 }
 
 ###############################################################################
+# Event selection
+###############################################################################
+
+test <- copy(current_difference)
+setorderv(test, c("contig", "contig_index"))
+test[
+  , event := u_val_weighted_log < arg$min_u_val 
+][
+  , distance_previous_event := contig_index - data.table::shift(contig_index, 1), by = .(contig, event, direction)
+][
+  , distance_next_event := data.table::shift(distance_previous_event, -1), by = .(contig, event, direction)
+][
+  , event_group := if_else(distance_previous_event > 2 | is.na(distance_previous_event), seq_len(.N), NULL)
+][
+  , event_group := event_group[1], by = .(cumsum(!is.na(event_group)), event)
+][
+  , event_center := contig_index == contig_index[ceiling(.N/2)], by = .(contig, event_group)
+][
+  , event_center := if_else(event, event_center, event)
+]
+plot_col <- c("red", "#ffa600")
+ggsave(
+  width = unit(8, "cm"),
+  height = unit(10, "cm"),
+  filename = glue("{arg$out}/current_difference_zoom.png"),
+  device = "png",
+  test %>% 
+    mutate(mean_dif2 = abs(mean_dif) * if_else(direction == "fwd", 1, -1)) %>% 
+    filter(contig == "bs_contig1" & contig_index < 300000) %>% 
+    ggplot() +
+    aes(x = contig_index, y = mean_dif2) +
+    geom_hline(yintercept = 0) +
+    geom_segment(aes(x = contig_index, xend = contig_index, yend = mean_dif2, col = direction), y = 0, size = 0.1) +
+    geom_point(aes(size = event_center, fill = event_center), shape = 21) +
+    labs(
+      x = "Contig Position",
+      y = "NAT vs. PCR (Mean difference)"
+    )  + 
+    scale_size_manual(values = c(0.2, 2)) +
+    scale_fill_manual(values = plot_col) +
+    scale_color_manual(values = c("#1034a6", "#850101")) +
+    guides(
+      fill = guide_legend(title = "Event"),
+      size = guide_legend(title = "Event"),
+      col = guide_legend(title = "Direction"),
+      alpha = "none"
+    ) +
+    theme_bw() +
+    ggforce::facet_zoom(
+      xlim = c(89000, 90000), ylim = c(-2.5, 2.5), horizontal = FALSE, zoom.size = 1
+    )
+)
+
+
+# Positions with mapping
+test %>% 
+  filter(direction == "fwd" & contig == "bs_contig1") %>% 
+  nrow /
+test %>% 
+  filter(direction == "fwd" & contig == "bs_contig1") %>% 
+  pull(contig_index) %>% 
+  max()
+###############################################################################
 # Plot
 ###############################################################################
 
-# p_all <- plot_events(current_difference)
-# 
-# p_all %>% 
-# pblapply(
-#   function(p){
-#       ggsave(
-#         width = unit(8, "cm"),
-#         height = unit(10, "cm"),
-#         p, 
-#         filename = glue("{arg$out}/current_difference_{p$labels$title}.png"), 
-#         device = "png"
-#       )
-#     }
-#   )
+p_all <- plot_events(current_difference)
+
+p_all %>%
+pblapply(
+  function(p){
+      ggsave(
+        width = unit(8, "cm"),
+        height = unit(10, "cm"),
+        p,
+        filename = glue("{arg$out}/current_difference_{p$labels$title}.png"),
+        device = "png"
+      )
+    }
+  )
 
 
 ###############################################################################
@@ -643,6 +709,11 @@ signal_mappings_pcr_1 <- signal_mappings_pcr_unnested[batch == "Batch_1", ] %>%
 current_difference_pcr <- copy(signal_mappings_pcr_0)
 calculate_current_diff(current_difference_pcr, signal_mappings_pcr_1, arg$min_u_val)
 
+current_difference_pcr[, `:=`(nat = NULL, pcr = NULL)]
+fwrite(
+  current_difference_pcr,
+  glue("{arg$out}/current_difference_pcr.tsv")
+)
 
 # plot_events(signal_mappings_pcr_0[
 #   n_nat_map > 1 & n_pcr_map > 1
