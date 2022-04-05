@@ -14,7 +14,7 @@ module purge
 bam="/shared-nfs/SH/samples/zymoHMW/PCR/trim_filt_ref.bam"
 file="trim_filt_ref"
 module load SAMtools/1.14-GCC-10.2.0
-# samtools view "$bam" > "$file.view.txt"
+samtools view "$bam" > "$file.view.txt"
 samtools depth --threads 20 -a "$bam" > "$file.depth"
 module purge
 
