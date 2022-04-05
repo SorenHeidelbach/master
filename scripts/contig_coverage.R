@@ -32,7 +32,7 @@ reference <- read.fasta(arg$reference) %>%
   setnames(c("ref", "size", "GC"))
 
 
-n = 500
+n = 50
 
 coverage <- fread(arg$cov_file) %>% 
   setnames(c("ref", "pos", "cov"))
