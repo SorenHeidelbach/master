@@ -29,7 +29,7 @@ rolling_mean_log <- function(x, contig_index, n = 2, weight_dropoff = 0.75, base
   warningCondition(length(x) < 1, message = "Input vector of size 0?")
   warningCondition(length(contig_index) < 1, message = "Index vector of size 0?")
   warningCondition(is.na(contig_index) %>%  any(), message = "There are NA values in the contig index")
-
+  
   dir.create(paste0(arg$out, "/temp"), showWarnings = FALSE)
   if(length(na.omit(x)) != 0) {
     log_info(glue("length of x: {length(x)}"))
@@ -96,22 +96,23 @@ parser$add_argument("-t", "--threads", default = 10, type = "integer", help = "T
 parser$add_argument("--min_mappings", default = 3, type = "integer", help = "Minimum coverage of position to be included (both NAT and PCR)")
 
 arg <- parser$parse_args()
-arg$min_u_val <- 1e-9
+arg$min_p_val <- 1e-9
 
 arg <- list()
 arg$signal_mapping_pcr <- "/shared-nfs/SH/data/zymoHMW/PCR/megalodon/megalodon/pcr_HMW-zymo_Z2_continued/signal_mappings.hdf5"
 arg$signal_mapping_nat <- "/shared-nfs/SH/data/zymoHMW/NAT/megalodon/signal_mappings.hdf5"
 arg$read_mapping_pcr <- "/shared-nfs/SH/data/zymoHMW/PCR/megalodon/megalodon/pcr_HMW-zymo_Z2_continued/mappings.view.txt.gz"
 arg$read_mapping_nat <- "/shared-nfs/SH/data/zymoHMW/NAT/megalodon/mappings.view.txt.gz"
-arg$out <- "/shared-nfs/SH/results/zymoHMW/current_difference/test1_20220401"
+arg$out <- "/shared-nfs/SH/results/zymoHMW/current_difference/test1_20220404"
 arg$contig_plot <- c("bs_contig1", "lf_contig1")
 arg$overwrite <- FALSE
 arg$save_intermediate_files <- TRUE
-
+arg$threads <- 20
+arg$min_mappings <- 3
 
 # arg$out <- "/shared-nfs/SH/results/zymoHMW/current_difference/test1_20220331"
-arg$u_val_weight_window <- 3 # val*2 + 1
-arg$u_val_weight_dropoff <- 0.9
+arg$p_val_weight_window <- 3 # val*2 + 1
+arg$p_val_weight_dropoff <- 0.9
 
 
 dir.create(arg$out, showWarnings = FALSE)
@@ -157,41 +158,41 @@ load_mapping_hdf5 <- function(hdf5_file,
     #cbind("digitisation" = h5read(hdf5_file, name = paste0("/Batches/", batch, "/digitisation"))) %>% 
     cbind("offset" = h5read(hdf5_file, name = paste0("/Batches/", batch, "/offset"))) %>% 
     cbind("range" = h5read(hdf5_file, name = paste0("/Batches/", batch, "/range"))) %>% 
-    #cbind("scale_frompA" = h5read(hdf5_file, name = paste0("/Batches/", batch, "/scale_frompA"))) %>% 
-    #cbind("shift_frompA" = h5read(hdf5_file, name = paste0("/Batches/", batch, "/shift_frompA"))) %>% 
+    cbind("scale_frompA" = h5read(hdf5_file, name = paste0("/Batches/", batch, "/scale_frompA"))) %>% 
+    cbind("shift_frompA" = h5read(hdf5_file, name = paste0("/Batches/", batch, "/shift_frompA"))) %>% 
     apply(MARGIN = 2, FUN = as.numeric) %>% 
     data.table(stringsAsFactors = FALSE) %>% 
     cbind("read_id" = h5read(hdf5_file, name = paste0("/Batches/", batch, "/read_id")))
-
+  
   
   log_info("Adding read information to reference mapping")
   # Add read id to ref to signal for later grouping
   Ref_to_signal <- mapply(
-      function(len, start, id){
-        list(
-          signal_frame = Ref_to_signal$ref_to_signal[start:(start+len-1)],
-          read_id = id
-        )
-      },
-      reads$Ref_to_signal_lengths,
-      (cumsum(reads$Ref_to_signal_lengths) - reads$Ref_to_signal_lengths + 1),
-      reads$read_id, 
-      SIMPLIFY =  FALSE
-    ) %>% 
-      rbindlist()
+    function(len, start, id){
+      list(
+        signal_frame = Ref_to_signal$ref_to_signal[start:(start+len-1)],
+        read_id = id
+      )
+    },
+    reads$Ref_to_signal_lengths,
+    (cumsum(reads$Ref_to_signal_lengths) - reads$Ref_to_signal_lengths + 1),
+    reads$read_id, 
+    SIMPLIFY =  FALSE
+  ) %>% 
+    rbindlist()
   
   # Add dacs window and reference integer
   Ref_to_signal[
-      , n_dac := signal_frame-data.table::shift(signal_frame, fill = 0), by = read_id
+    , n_dac := signal_frame-data.table::shift(signal_frame, fill = 0), by = read_id
     ]
   Ref_to_signal <- na.omit(Ref_to_signal, cols=seq_along(Ref_to_signal))[
-      , start := cumsum(n_dac)
+    , start := cumsum(n_dac)
     ][
-      !(n_dac == signal_frame & n_dac != 0),
+    !(n_dac == signal_frame & n_dac != 0),
     ][
-      , ref := Reference$reference
+    , ref := Reference$reference
     ][
-      , pos := 1:.N, by = read_id
+    , pos := 1:.N, by = read_id
     ]
   log_info("Adding reference mapping to dacs")
   
@@ -212,8 +213,7 @@ load_mapping_hdf5 <- function(hdf5_file,
   ][
     , batch := batch
   ][
-    , unlist(dac, recursive = FALSE), 
-    by = eval(names(Ref_to_signal)[!(names(Ref_to_signal) %in% c("dac"))])
+    , unlist(dac, recursive = FALSE), by = eval(names(Ref_to_signal)[!(names(Ref_to_signal) %in% c("dac"))])
   ] %>% 
     setnames("V1", "dac")
   
@@ -232,7 +232,7 @@ load_mapping_hdf5 <- function(hdf5_file,
 add_mapping_to_dacs <- function(dacs, mappings, type){
   log_info("Joining mappings")
   dacs[
-      mappings, on = .(read_id), `:=`(contig = i.contig, start = i.start, direction = i.direction)
+    mappings, on = .(read_id), `:=`(contig = i.contig, start = i.start, direction = i.direction)
     ][
       , type := type
     ][
@@ -248,109 +248,43 @@ add_mapping_to_dacs <- function(dacs, mappings, type){
     ]
 }
 
+
+
+
 # Calculate mean difference and u-test value
 calculate_current_diff <- function(
   dt1, 
   dt2, 
-  min_u_val, 
+  min_p_val, 
   min_cov = 3, 
   data_splits = 1,
   parallel = TRUE){
   # log_info("Setting up cluster")
   # cl <- makeForkCluster(nnodes = arg$threads)
   pboptions(nout = data_splits)
-  log_info("Mean difference")
+  log_info("Distance and Mean difference")
   dt1[
       dt2, on = .(contig_id, direction), nat := i.nat
     ][
-      , mean_nat := pblapply(
-          nat,          
-          function(x){
-            if (is.null(x)) {
-              NA
-            } else {
-              mean(x$dacs, na_rm = TRUE)}
-          },
-          cl = ifelse(parallel, arg$threads, NULL)) %>% 
-        unlist()
+      , dist := dist(rbind(nat, pcr)) %>% c(), by = .(contig_id, direction)
     ][
-      , mean_pcr := pblapply(
-          pcr, 
-          function(x){
-            if (is.null(x)) {
-              NA
-            } else {
-              mean(x$dacs, na_rm = TRUE)}
-            },
-          cl = ifelse(parallel, arg$threads, NULL)) %>% 
-        unlist()
-    ][
-      , mean_dif := mean_nat - mean_pcr
+      , mean_dif := mean(nat) - mean(pcr), by = .(contig_id, direction)
     ]
-  log_info("Dac number and coverage")
-  parallel = FALSE
-  dt1[
-      , n_nat := pblapply(
-          nat, 
-          nrow,
-          cl = if(parallel) arg$threads else NULL) %>% 
-        pblapply(
-          X = .,
-          function(x){ifelse(is.null(x), NA, x)},
-          cl = if(parallel) arg$threads else NULL) %>% 
-        unlist()
-    ][
-      , n_pcr := pblapply(
-          pcr,
-          nrow,
-          cl = if(parallel) arg$threads else NULL) %>% 
-        pblapply(
-          X = .,
-          function(x){ifelse(is.null(x), NA, x)},
-          cl = if(parallel) arg$threads else NULL) %>% 
-        unlist()
-    ][
-      , n_nat_map := pblapply(
-          nat, 
-          function(x){x$read_id %>% unique %>% length},
-          cl = if(parallel) arg$threads else NULL) %>% 
-        unlist()
-    ][
-      , n_pcr_map := pblapply(
-          pcr, 
-          function(x){x$read_id %>% unique %>% length},
-          cl = if(parallel) arg$threads else NULL) %>% 
-        unlist()
-    ]
-  parallel = TRUE
   log_info("Wilcox test")
-  dt1[
-      , u_val := mcmapply(
-        function(nat, pcr, n_nat_map, n_pcr_map){
-            if(n_nat_map >= min_cov & n_pcr_map >= min_cov) {
-              wilcox.test(nat$dacs, pcr$dacs)$p.value
-            } else {
-              NA
-            }
-          },
-        nat,
-        pcr,
-        n_nat_map,
-        n_pcr_map,
-        mc.cores = arg$threads
-      ) %>% unlist()
+  dt2 <- dt1[
+      , .(p_val = wilcox.test(nat, pcr)$p.value), by = .(contig_id, dist, mean_dif, contig, contig_index, direction)
     ]
   log_info("Weighting p-values")
-  dt1[
-      , u_val_weighted_log := rolling_mean_log(u_val, contig_index = contig_index, n = arg$u_val_weight_window, weight_dropoff = arg$u_val_weight_dropoff), by = contig
+  dt2[
+      , p_val_weighted_log := rolling_mean_log(p_val, contig_index = contig_index, n = arg$p_val_weight_window, weight_dropoff = arg$p_val_weight_dropoff), by = contig
     ][
-      , u_val_bonf := p.adjust(u_val, n = length(u_val), method = "bonferroni")
+      , p_val_bonf := p.adjust(p_val, n = length(p_val), method = "bonferroni")
     ][
-      , u_val_bonf_weighted_log := rolling_mean_log(u_val_bonf, contig_index = contig_index, n = arg$u_val_weight_window, weight_dropoff = arg$u_val_weight_dropoff), by = contig
+      , p_val_bonf_weighted_log := rolling_mean_log(p_val_bonf, contig_index = contig_index, n = arg$p_val_weight_window, weight_dropoff = arg$p_val_weight_dropoff), by = contig
     ][
-      , u_val_BH := p.adjust(u_val, n = length(u_val), method = "BH")
+      , p_val_BH := p.adjust(p_val, n = length(p_val), method = "BH")
     ][
-      , u_val_BH_weighted_log := rolling_mean_log(u_val_BH, contig_index = contig_index, n = arg$u_val_weight_window, weight_dropoff = arg$u_val_weight_dropoff), by = contig
+      , p_val_BH_weighted_log := rolling_mean_log(p_val_BH, contig_index = contig_index, n = arg$p_val_weight_window, weight_dropoff = arg$p_val_weight_dropoff), by = contig
     ]
 }
 
@@ -404,6 +338,14 @@ if (!file.access(glue("{arg$out}/singal_mappings_pcr.tsv.gz"), mode = 4) == 0 | 
   h5closeAll()
   rm(hdf5_pcr)
   
+  
+  pascal <- generate_pascal_trianble()
+  signal_mappings_pcr <- signal_mappings_pcr_unnested[
+        n_dac >= 1, .(dac_embed = as.numeric(embed_vector(dac, pascal))), by = .(read_id, contig_id, contig_index, contig, direction)
+      ][
+        , .(pcr = mean_vec(dac_embed)), by = .(contig_id, contig_index, contig, direction)
+      ]
+  
   # Save signal mappings
   log_info("Saving processed PCR signal mappings")
   fwrite(signal_mappings_pcr_unnested, glue("{arg$out}/singal_mappings_pcr.tsv.gz"), compress = "gzip")
@@ -444,6 +386,15 @@ if (!file.access(glue("{arg$out}/singal_mappings_nat.tsv.gz"), mode = 4) == 0 | 
   h5closeAll()
   rm(hdf5_nat)
   
+  
+  pascal <- generate_pascal_trianble()
+  signal_mappings_nat <- signal_mappings_nat_unnested[
+      n_dac >= 1, .(dac_embed = as.numeric(embed_vector(dac, pascal))), by = .(read_id, contig_id, contig_index, contig, direction)
+    ][
+      , .(nat = mean_vec(dac_embed)), by = .(contig_id, contig_index, contig, direction)
+    ]
+  
+  
   log_info("Saving processed NAT signal mappings")
   fwrite(signal_mappings_nat_unnested, glue("{arg$out}/singal_mappings_nat.tsv.gz"), compress = "gzip")
   
@@ -453,7 +404,8 @@ if (!file.access(glue("{arg$out}/singal_mappings_nat.tsv.gz"), mode = 4) == 0 | 
   signal_mappings_nat_unnested <- fread(glue("{arg$out}/singal_mappings_nat.tsv.gz"))
 }
 
-
+signal_mappings_nat <- signal_mappings_nat_unnested2 %>% 
+  group_nest_dt(contig_id, contig_index, contig, direction, .key = "nat")
 
 signal_mappings_nat <- signal_mappings_nat_unnested %>% 
   group_nest_dt(contig_id, contig_index, contig, direction, .key = "nat")
@@ -466,11 +418,11 @@ rm(signal_mappings_nat_unnested)
 if (!file.access(glue("{arg$out}/current_difference.tsv.gz"), mode = 4) == 0 | arg$overwrite) {
   log_info("Calculating current difference and statistics")
   current_difference <- copy(signal_mappings_pcr)
-  calculate_current_diff(
-      current_difference, 
-      signal_mappings_nat, 
-      arg$min_u_val
-    )
+  current_difference <- calculate_current_diff(
+    current_difference, 
+    signal_mappings_nat, 
+    arg$min_p_val
+  )
   current_difference[, `:=`(nat = NULL, pcr = NULL)]
   setorderv(current_difference, c("contig", "contig_index"))
   
@@ -478,7 +430,6 @@ if (!file.access(glue("{arg$out}/current_difference.tsv.gz"), mode = 4) == 0 | a
   log_info("Saving current difference")
   fwrite(
     current_difference,
-    glue("{arg$out}/current_difference.tsv.gz"),
     compress = "gzip"
   )
   log_success("Performed currrent difference")
@@ -497,18 +448,24 @@ if ((!file.access(glue("{arg$out}/current_difference_pcr.tsv.gz"), mode = 4) == 
   pcr_read_id_1 <- mapping_pcr[mapping_pcr[, .I[ read_id %in% sample(read_id, length(read_id)/2) ], by=contig]$V1]$read_id
   pcr_read_id_2 <- mapping_pcr[! read_id %in% pcr_read_id_1, ]$read_id
   
-  signal_mappings_pcr_0 <- signal_mappings_pcr_unnested[read_id %in%  pcr_read_id_1, ] %>% 
-    group_nest_dt(contig_id, contig_index, contig, direction, .key = "pcr")
-  signal_mappings_pcr_1 <- signal_mappings_pcr_unnested[read_id %in% pcr_read_id_2, ] %>% 
-    group_nest_dt(contig_id, contig_index, contig, direction, .key = "nat")
+  signal_mappings_pcr_0 <- signal_mappings_pcr_unnested[read_id %in%  pcr_read_id_1, ][
+      n_dac >= 1, .(dac_embed = as.numeric(embed_vector(dac, pascal))), by = .(read_id, contig_id, contig_index, contig, direction)
+    ][
+      , .(pcr = mean_vec(dac_embed)), by = .(contig_id, contig_index, contig, direction)
+    ]
+  signal_mappings_pcr_1 <- signal_mappings_pcr_unnested[read_id %in% pcr_read_id_2, ][
+      n_dac >= 1, .(dac_embed = as.numeric(embed_vector(dac, pascal))), by = .(read_id, contig_id, contig_index, contig, direction)
+    ][
+      , .(nat = mean_vec(dac_embed)), by = .(contig_id, contig_index, contig, direction)
+    ]
   
   # Current difference
   current_difference_pcr <- copy(signal_mappings_pcr_0)
-  calculate_current_diff(current_difference_pcr, signal_mappings_pcr_1,  min_u_val = arg$min_u_val)
+  current_difference_pcr <- calculate_current_diff(current_difference_pcr, signal_mappings_pcr_1,  min_p_val = arg$min_p_val)
   
   # Save
   current_difference_pcr[, `:=`(nat = NULL, pcr = NULL)]
-
+  
   fwrite(
     current_difference_pcr,
     glue("{arg$out}/current_difference_pcr.tsv.gz"),

@@ -49,7 +49,7 @@ parser$add_argument("--reference",  nargs=1, help="Reference mapped too", requir
 parser$add_argument("--out",  nargs=1, help="Output folder [default data_dir]")
 arg <- parser$parse_args()
 
-# arg$min_u_val <- 1e-12
+arg$min_p_val <- 1e-12
 # arg$data_dir <- "/shared-nfs/SH/results/zymoHMW/current_difference/test1_20220331"
 # arg$out <- "/shared-nfs/SH/results/zymoHMW/current_difference/test1_20220331"
 if (is.null(arg$out)) {
@@ -65,7 +65,7 @@ arg$data_dir <- glue("/shared-nfs/SH/results/zymoHMW/current_difference/test1_20
 
 current_difference <- fread(glue("{arg$data_dir}/current_difference.tsv.gz"))
 current_difference[
-  , event := u_val_weighted_log < arg$min_u_val 
+  , event := p_val < arg$min_p_val 
   ][
   , distance_previous_event := contig_index - data.table::shift(contig_index, 1), by = .(contig, event, direction)
   ][
@@ -81,7 +81,7 @@ current_difference[
   ]
 current_difference_pcr <- fread(glue("{arg$data_dir}/current_difference_pcr.tsv.gz"))
 current_difference_pcr[
-  , event := u_val_weighted_log < arg$min_u_val 
+  , event := p_val_weighted_log < arg$min_p_val 
   ][
   , distance_previous_event := contig_index - data.table::shift(contig_index, 1), by = .(contig, event, direction)
   ][
@@ -123,9 +123,9 @@ plot_events <- function(dt){
     ggtitle("mean_diff")
   
   p1.2 <- dt %>% 
-    ggplot(aes(x = contig_index, y = u_val_weighted_log)) +
+    ggplot(aes(x = contig_index, y = p_val_weighted_log)) +
     geom_hline(yintercept = 1) +
-    geom_segment(aes(x = contig_index, xend = contig_index, yend = u_val_weighted_log), y = 0, size = 0.2) +
+    geom_segment(aes(x = contig_index, xend = contig_index, yend = p_val_weighted_log), y = 0, size = 0.2) +
     geom_point(shape = 21) +
     labs(
       x = "Contig Position",
@@ -180,7 +180,7 @@ plot_events <- function(dt){
     mutate(
       mappings = n_pcr_map / n_nat_map
     ) %>% 
-    ggplot(aes(y = mappings, x = u_val_weighted_log)) +
+    ggplot(aes(y = mappings, x = p_val_weighted_log)) +
     labs(
       x = "U-value",
       y = "nr. PCR / nr. NAT"
@@ -193,7 +193,7 @@ plot_events <- function(dt){
     ggtitle("cov_proportion")
   
   p1.6 <- dt %>% 
-    ggplot(aes(x = mean_dif, y = u_val_weighted_log)) +
+    ggplot(aes(x = mean_dif, y = p_val_weighted_log)) +
     labs(
       x = "Mean difference",
       y = "U-value"
@@ -229,7 +229,7 @@ ggsave(
   filename = glue("{arg$out}/current_difference_zoom.png"),
   device = "png",
   current_difference %>% 
-    mutate(mean_dif2 = abs(mean_dif) * if_else(direction == "fwd", 1, -1)) %>% 
+    mutate(mean_dif2 = abs(dist) * if_else(direction == "fwd", 1, -1)) %>% 
     ggplot() +
     aes(x = contig_index, y = mean_dif2) +
     geom_hline(yintercept = 0) +
@@ -289,10 +289,10 @@ plot_PvP_NvP <- function(thresholds, col){
         )
       }) %>% 
     rbindlist() %>% 
-    setnames(paste0("V", 1:5), c("U_val", "p_NvP",  "p_PvP", "p_diff", "p_ratio")) %>%  
+    setnames(paste0("V", 1:5), c("P.val", "p_NvP",  "p_PvP", "p_diff", "p_ratio")) %>%  
     tidyr::pivot_longer(starts_with("p_"), values_to = "proportion", names_to = "type") %>% 
     ggplot() +
-    aes(x = U_val, y = proportion, col = type) +
+    aes(x = P.val, y = proportion, col = type) +
     geom_line(size = 1.2) +
     #geom_point(shape = 21, size = 1.5) +
     scale_x_log10() +
@@ -308,37 +308,37 @@ ylimits <- c(1e-5, 1)
 ybreaks <- 10 ^ seq(log(ylimits[2], base = 10), log(ylimits[1], base = 10), by = -1)
 ylabel <- paste0(signif(ybreaks*100, 1), "%")
 # p-value
-p2.1 <-  10^-seq(0, 20, by = 0.2) %>% 
-  plot_PvP_NvP(col = "u_val") +
-  labs(title = "P-value") +
-  scale_y_log10(breaks = ybreaks, limits = ylimits, label = ylabel)
+p2.1 <-  10^-seq(0, 2, by = 0.2) %>% 
+  plot_PvP_NvP(col = "p_val") +
+  labs(title = "P-value") 
+  #scale_y_log10(breaks = ybreaks, limits = ylimits, label = ylabel)
 
 # p-value log weighted 
-p2.3 <-  10^-seq(1, 20, by = 0.2) %>% 
-  plot_PvP_NvP(col = "u_val_weighted_log") +
-  labs(title = "P-value log weighted") +
-  scale_y_log10(breaks = ybreaks, limits = ylimits, label = ylabel)
+p2.3 <-  10^-seq(0, 2, by = 0.2) %>% 
+  plot_PvP_NvP(col = "p_val_weighted_log") +
+  labs(title = "P-value log weighted") 
+  #scale_y_log10(breaks = ybreaks, limits = ylimits, label = ylabel)
 
 # Mean difference cutoff
 p2.4 <- 10^-seq(-1, 3, by = 0.1) %>% 
-  plot_PvP_NvP("mean_dif") +
+  plot_PvP_NvP("dist") +
   xlab("Mean difference threshold") +
   labs(title = "Mean difference")
 
-p2.5 <- 10^-seq(0, 20, by = 0.1) %>% 
-  plot_PvP_NvP("u_val_BH") +
-  labs(title = "P-value B&H corrected") +
-  scale_y_log10(breaks = ybreaks, limits = ylimits, label = ylabel)
+p2.5 <- 10^-seq(0, 2, by = 0.1) %>% 
+  plot_PvP_NvP("p_val_BH") +
+  labs(title = "P-value B&H corrected") 
+  #scale_y_log10(breaks = ybreaks, limits = ylimits, label = ylabel)
 
-p2.6 <- 10^-seq(0, 20, by = 0.1) %>% 
-  plot_PvP_NvP("u_val_BH_weighted_log") +
-  labs(title = "P-value B&H corrected and log weighted") +
-  scale_y_log10(breaks = ybreaks, limits = ylimits, label = ylabel)
+p2.6 <- 10^-seq(0, 2, by = 0.1) %>% 
+  plot_PvP_NvP("p_val_BH_weighted_log") +
+  labs(title = "P-value B&H corrected and log weighted") 
+  #scale_y_log10(breaks = ybreaks, limits = ylimits, label = ylabel)
 
-p2.7 <- 10^-seq(0, 20, by = 0.1) %>% 
-  plot_PvP_NvP("u_val_bonf") +
-  labs(title = "P-value Bonferroni") +
-  scale_y_log10(breaks = ybreaks, limits = ylimits, label = ylabel)
+p2.7 <- 10^-seq(0, 2, by = 0.1) %>% 
+  plot_PvP_NvP("p_val_bonf") +
+  labs(title = "P-value Bonferroni") 
+  #scale_y_log10(breaks = ybreaks, limits = ylimits, label = ylabel)
 
 
 p2_all <- (p2.1 + p2.5 + p2.7) /
