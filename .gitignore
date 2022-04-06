@@ -1,2 +1,6 @@
 Rlib
 .Rproj.user
+Rplot.png
+.RData
+.Rhistory
+scripts/.depth

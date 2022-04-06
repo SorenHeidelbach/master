@@ -6,19 +6,13 @@ if (!require("BiocManager")) install.packages("BiocManager", lib = "/shared-nfs/
 
 # Loading libraries with pacman
 pacman::p_load(
-  "ggplot2",
   "tidyr",
   "dplyr",
-  "Rtsne",
-  "purrr",
-  "dbscan",
-  "glue",
-  "seqinr",
-  "jsonlite"
+  "seqinr"
 )
 ##-----------------------------------------------------------------------------
-# Calculate GC% from fasta file path
 get_GC_percent <-  function(fasta, min_size = 0) {
+  # Calculate GC% from fasta file path
   fasta %>%
     names() %>%
     map_df(
@@ -33,21 +27,108 @@ get_GC_percent <-  function(fasta, min_size = 0) {
     ) %>%
     filter(contig_length >= min_size)
 }
-##-----------------------------------------------------------------------------
-# Normalise values in columns of data frame
+
 normalise_cols <- function(numeric_dataframe){
+  # Normalise values in columns of data frame
   numeric_dataframe %>%
     apply(MARGIN = 2, function(x) (x-min(x)) / (max(x) - min(x))) %>%
     as.data.frame()
 }
-##-----------------------------------------------------------------------------
-# Standardise values in columns of data frame
+
 standardise_cols <- function(numeric_dataframe){
+  # Standardise values in columns of data frame
   numeric_dataframe %>%
     apply(MARGIN = 2, function(x) (x - mean(x))/sd(x)) %>%
     as.data.frame()
 }
 
+group_nest_dt <- function(dt, ..., .key = "data"){
+  # goup_nest version for data.table
+  stopifnot(is.data.table(dt))
+  by <- substitute(list(...))
+  dt <- dt[, list(list(.SD)), by = eval(by)]
+  setnames(dt, old = "V1", new = .key)
+  dt
+}
+
+unnest_dt <- function(dt, col, id){
+  # unnest version for data.table 
+  stopifnot(is.data.table(dt))
+  by <- substitute(id)
+  col <- substitute(unlist(col, recursive = FALSE))
+  dt[, eval(col), by = eval(by)]
+}
+
+set_sum_1 <- function(x){
+  x/sum(x)
+}
+
+generate_pascal_trianble <- function(levels = 1000){
+  # Generate list with all layers of pascal triangle to specified level (e.g. 1, 11, 121, 1331, 14641)
+  x <- 1
+  pascal <- list()
+  for (i in 1:levels) {x <- c(0, x) + c(x, 0); pascal[[i]] <- x }
+  return(pascal)
+}
+
+embed_vector <- function(vec, pascal){
+  # Turn size n vector into size 5 vector using pascal triangle
+  if(length(vec) > 1000) vec <- vec[sample(1:length(vec), 1000) %>% sort]
+  if(length(vec) <=5 ) return(vec)
+  level <- length(vec) - 5
+  vec_out <- lapply(
+    1:5,
+    function(i){
+      sum(vec[i:(level+i)] * pascal[[level]]) / (2^level)
+    }
+  ) %>%  unlist()
+  return(vec_out)
+}
+
+rolling_mean <- function(x, n = 2, weight_dropoff = 0.75){
+  # Calculate rolling mean with distance weigth decay
+  stopifnot(is.numeric(x))
+  max_i <- length(x)
+  weigths <- lapply(1:n, function(x) weight_dropoff^x) %>% unlist()
+  weigths <- c(weigths[length(weigths):1], 1, weigths)
+  out <- lapply(
+    seq_along(x),
+    function(i){
+      values <- as.numeric(x[max(1,i-n):min(max_i, i+n)])
+      weigths[max(1, n - i + 2):min(n*2 + 1, n + 1 + max_i - i)] %>% 
+        set_sum_1() %>%  
+        sum(values * ., na.rm = TRUE)
+    }
+  ) %>%  unlist()
+  return(out)  
+}
+
+mean_vec <- function(vec, frequency = 5){
+  if (length(vec) %% frequency != 0) {
+    warning("One of the vectors is of not correct length, remainder values are dropped")
+    vec <- vec[1:(length(vec)-(length(vec) %% frequency))]
+  }
+  
+  matrix <- matrix(vec, ncol = frequency, byrow = TRUE)
+  mean_vec <- (matrix %>% apply(2, sum)) / nrow(matrix)
+  return(mean_vec)
+}
+mean_vec_dist <- function(vec1, vec2){
+  # Calculate mean vector and get distance between these
+  if (length(vec1) %% freq != 0 | length(vec2) %% freq != 0) {
+    warning("One of the vectors is of not correct length, remainder values are dropped")
+    vec1 <- vec1[1:length(vec1)-(length(vec1) %% freq)]
+    vec2 <- vec2[1:length(vec2)-(length(vec2) %% freq)]
+  }
+  matrix1 <- matrix(vec1, ncol = freq, byrow = TRUE)
+  matrix2 <- matrix(vec2, ncol = freq, byrow = TRUE)
+  data.frame(
+    dist = rbind(
+      (matrix1 %>% apply(2, sum)) / nrow(matrix1),
+      (matrix2 %>% apply(2, sum)) / nrow(matrix2)
+    ) %>% dist() %>% c()
+  )
+}
 ###############################################################################
 ## Misc functions
 ###############################################################################
@@ -105,267 +186,3 @@ read_checkm <- function(path){
                   function(x) str_extract(x, "(?<=\\:)[^\\}]*"))) %>%
     set_names(bin_header)
 }
-
-cluster_plot <- function(ggplot_obj, savepath,
-                         xlab = "Variable 1", ylab = "Variable 2",
-                         dim = c(8, 6)){
-  ggplot_obj <- ggplot_obj + geom_density_2d(contour = TRUE, col = "gray60") +
-    geom_point(shape = 21, alpha = 0.7) +
-    theme_bw() +
-    scale_size(
-      range = c(0.1, 15),
-      limits = c(1000, 1000000)
-    ) +
-    guides(
-      fill = guide_legend(title="Cluster"),
-      size = guide_legend(title = "Contig Size", override.aes = list(col=NA, fill = "black"))
-    ) +
-
-    labs(
-      x = xlab,
-      y = ylab
-    )
-  ggsave(ggplot_obj, filename = savepath, width = dim[1], height = dim[2])
-}
-
-###########################################################################
-## Nanodisco feature engineering
-###############################################################################
-
-##-----------------------------------------------------------------------------
-# Loading NanoDisco profile
-load_ND_profile <- function(path,
-                            min_contig_size = 25000) {
-  # Load profile
-  message("Loading profile")
-  profile <- readRDS(path)
-  profile <- as.data.table(profile)
-  message("  Metainformation")
-  # Contig meta information
-  contigs <- profile %>%
-    attributes() %>%
-    `[[`("contig_coverage") %>%
-    filter(contig_length > min_contig_size)  %>%
-    arrange(-contig_length) %>%
-    mutate(size_order = as.numeric(row.names(.))) %>%
-    mutate(contig=chr) %>%
-    select(-chr)
-
-  message("  Removing small contigs")
-  # Combine contig information with profile data frame
-  profile[
-    contigs, on = "contig", (names(contigs)[-7]) := mget(paste0("i.", names(contigs)[-7]))
-  ][
-    contig_length >= min_contig_size
-  ]
-  return(profile)
-}
-
-##-----------------------------------------------------------------------------
-# Profile into features
-get_ND_profile_features <- function(profile,
-                                    min_nb_occurrence = 10,
-                                    min_dist_score = 1.5,
-                                    min_n = 10,
-                                    filter_methods = "max",
-                                    missing_value = 0,
-                                    select_features = "all"){
-  # Loading nested profile dataframe
-  profile
-  message("Filtering")
-  if(select_features != "all"){
-    profile %>%
-      filter(paste0(motif, "_", distance_motif) %in% select_features)
-  }
-
-  # Removing feature vectors that doesn't contain any informative values
-  if(filter_methods == "max"){
-    message("  Keeping all values in feature vector if just one of the values are above minimum")
-    ND_features <- profile %>%
-      group_by(motif, distance_motif) %>%
-      filter(max(nb_occurrence) > min_nb_occurrence & max(dist_score) > min_dist_score)
-  } else {
-    message("  Choose valid filtering method")
-    stop()
-  }
-
-  message("Indentifying missing feature values")
-  # pviot longer to get each feature in a column
-  ND_features <- ND_features %>%
-    ungroup() %>%
-    mutate(
-      feature_name = paste0(motif, "_", distance_motif)
-    ) %>%
-    select(contig, feature_name, dist_score) %>%
-    pivot_wider(values_from = dist_score, names_from = feature_name)
-
-  ND_features <- ND_features %>% pivot_longer(!contig, names_to = "feature_name", values_to = "dist_score")
-
-  missingness <- sum(is.na(ND_features))/(nrow(ND_features)*ncol(ND_features))
-  message(paste0("  Percent of missing values: ", missingness))
-  # Setting missing values according to specified method
-  contigs <- ND_features$contig
-  if (missing_value %in% "mean") {
-    message("  Mising values are filled with feature vector mean")
-    ND_features <- ND_features %>%
-      group_by(feature_name) %>%
-      mutate(
-        dist_score = ifelse(is.na(dist_score), mean(dist_score, na.rm = TRUE), dist_score)
-      )
-  } else if (is.numeric(missing_value)) {
-    message(paste0("  Missing values are replaced with ", missing_value))
-    ND_features <- ND_features %>%
-      group_by(feature_name) %>%
-      mutate(
-        dist_score = ifelse(is.na(dist_score), missing_value, dist_score)
-      )
-  } else if (missing_value == "NA") {
-    message("  Missing values are kept as NA")
-    # returns dataframe with NA values
-  } else {
-    message("  Please set a valid 'missing_value' ('mean' or replacement number or 'NA')")
-    stop()
-  }
-  ND_features <- ND_features %>%
-    pivot_wider(values_from = dist_score, names_from = feature_name)
-  message("  Missing values treated")
-  return(ND_features)
-}
-
-###############################################################################
-## Ordination/dimontionality reduction
-###############################################################################
-# All functions take in a feature matrix with an ID column and a metadata dataframe
-
-##-----------------------------------------------------------------------------
-# PCA
-
-pca <- function(features, metadata = NA, nPC = 2) {
-  df <- prcomp(features, center = TRUE, scale. = TRUE) %>%
-    `[[`(5) %>%
-    as.data.frame() %>%
-    select(paste0("PC", 1:nPC)) %>%
-    mutate(contig = features$contig)
-  if (!is.na(metadata)) {
-    attr(df, "metadata") <- metadata
-  }
-  df
-}
-
-# PCA relevant information
-pca_list <- function(df){
-  # PCA object
-  pca_object <- df %>%
-    prcomp()
-
-  # PCA explained variance
-  pca_explained_var <- data.frame(
-    PC = (pca_object$x %>% colnames()),
-    var_explained=(pca_object$sdev)^2/sum((pca_object$sdev)^2)
-  ) %>%
-    mutate(PC = factor(PC, levels = PC[order(var_explained, decreasing = TRUE)])) %>%
-    arrange(-var_explained)
-
-  # PCA loading vector for each PC
-  pca_loading_vector <- pca_object$rotation %>%
-    data.frame() %>%
-    mutate(label = rownames(.))
-  return(list(object = pca_object, variance = pca_explained_var, loading_vector = pca_loading_vector))
-}
-
-##-----------------------------------------------------------------------------
-# t-SNE
-
-tsne <- function(features,
-                 theta = 0.5,
-                 perplexity = 5,
-                 max_iter = 1000,
-                 metadata = NA,
-                 seed = 1){
-  set.seed(seed)
-  tsne_obj <- Rtsne(as.matrix(features),
-                    theta = theta,
-                    perplexity = perplexity,
-                    max_iter = max_iter)
-  df <- tsne_obj$Y %>%
-    as.data.frame()
-  if (!is.na(metadata)) {
-    attr(df, "metadata") <- metadata
-  }
-  df
-}
-tsne_obj <- function(features,
-                 theta = 0.5,
-                 perplexity = 5,
-                 max_iter = 1000,
-                 metadata = NA,
-                 seed = 1){
-  set.seed(seed)
-  tsne_obj <- Rtsne(as.matrix(features),
-                    theta = theta,
-                    perplexity = perplexity,
-                    max_iter = max_iter)
-  df <- tsne_obj$Y %>%
-    as.data.frame()
-  if (!is.na(metadata)) {
-    attr(df, "metadata") <- metadata
-  }
-  tsne_obj
-}
-
-##-----------------------------------------------------------------------------
-# autoencoder
-
-autoencoder <- function(features,
-                        bottleneck_nodes = 2,
-                        intermediate_nodes = 6,
-                        epochs = 1000,
-                        activator = "relu"){
-  message("Defining model")
-  model <- keras_model_sequential()
-  model %>%
-    layer_dense(units = intermediate_nodes,
-                activation = activator,
-                input_shape = ncol(features)) %>%
-    layer_batch_normalization() %>%
-    layer_dense(units = intermediate_nodes,
-                activation = activator) %>%
-    layer_batch_normalization() %>%
-    layer_dense(units = bottleneck_nodes,
-                activation = activator,
-                name = "bottleneck") %>%
-    layer_batch_normalization() %>%
-    layer_dense(units = intermediate_nodes,
-                activation = activator) %>%
-    layer_batch_normalization() %>%
-    layer_dense(units = intermediate_nodes,
-                activation = activator) %>%
-    layer_batch_normalization() %>%
-    layer_dense(units = ncol(features))
-
-  model %>% compile(
-    loss = "mean_squared_error",
-    optimizer = "adam"
-  )
-
-  message("Training model")
-  features_train <- as.matrix(features)
-  model %>% fit(
-    x = features_train,
-    y = features_train,
-    epochs = epochs,
-    verbose = 1
-  )
-
-  message("Extracting latent variables")
-  # extract the bottleneck layer
-  bottleneck_layer_model <- keras_model(inputs = model$input, outputs = get_layer(model, "bottleneck")$output)
-
-  latent_features <- predict(bottleneck_layer_model, features_train) %>%
-    as.data.frame()
-}
-
-
-###############################################################################
-##
-###############################################################################
